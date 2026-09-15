@@ -295,7 +295,7 @@ function Find-ReturnPipeAdd {
     $null
 }
 
-function Rewrite-ExpressionLeaf {
+function Convert-ExpressionLeaf {
     param(
         [Parameter(Mandatory)]
         [Linq.Expressions.Expression]$Expression,
@@ -338,7 +338,7 @@ function Rewrite-ExpressionLeaf {
 
         if (-not $Expression.Expression) { return $Expression }
 
-        $obj = Rewrite-ExpressionLeaf `
+        $obj = Convert-ExpressionLeaf `
             -Expression $Expression.Expression `
             -TupleMemberName $TupleMemberName `
             -Replacement $Replacement `
@@ -348,15 +348,15 @@ function Rewrite-ExpressionLeaf {
     }
 
     if ($Expression -is [Linq.Expressions.UnaryExpression]) {
-        $op = Rewrite-ExpressionLeaf $Expression.Operand $TupleMemberName $Replacement $ReplacementCount
+        $op = Convert-ExpressionLeaf $Expression.Operand $TupleMemberName $Replacement $ReplacementCount
         return $Expression.Update($op)
     }
 
     if ($Expression -is [Linq.Expressions.InvocationExpression]) {
-        $target = Rewrite-ExpressionLeaf $Expression.Expression $TupleMemberName $Replacement $ReplacementCount
+        $target = Convert-ExpressionLeaf $Expression.Expression $TupleMemberName $Replacement $ReplacementCount
         $args = [Linq.Expressions.Expression[]]@(
             $Expression.Arguments | ForEach-Object {
-                Rewrite-ExpressionLeaf $_ $TupleMemberName $Replacement $ReplacementCount
+                Convert-ExpressionLeaf $_ $TupleMemberName $Replacement $ReplacementCount
             }
         )
         return $Expression.Update($target, $args)
@@ -365,7 +365,7 @@ function Rewrite-ExpressionLeaf {
     if ($Expression -is [Linq.Expressions.DynamicExpression]) {
         $args = [Linq.Expressions.Expression[]]@(
             $Expression.Arguments | ForEach-Object {
-                Rewrite-ExpressionLeaf $_ $TupleMemberName $Replacement $ReplacementCount
+                Convert-ExpressionLeaf $_ $TupleMemberName $Replacement $ReplacementCount
             }
         )
         return $Expression.Update($args)
@@ -373,7 +373,7 @@ function Rewrite-ExpressionLeaf {
 
     if ($Expression -is [Linq.Expressions.MethodCallExpression]) {
         $obj = if ($Expression.Object) {
-            Rewrite-ExpressionLeaf $Expression.Object $TupleMemberName $Replacement $ReplacementCount
+            Convert-ExpressionLeaf $Expression.Object $TupleMemberName $Replacement $ReplacementCount
         }
         else {
             $null
@@ -381,7 +381,7 @@ function Rewrite-ExpressionLeaf {
 
         $args = [Linq.Expressions.Expression[]]@(
             $Expression.Arguments | ForEach-Object {
-                Rewrite-ExpressionLeaf $_ $TupleMemberName $Replacement $ReplacementCount
+                Convert-ExpressionLeaf $_ $TupleMemberName $Replacement $ReplacementCount
             }
         )
 
@@ -389,12 +389,12 @@ function Rewrite-ExpressionLeaf {
     }
 
     if ($Expression -is [Linq.Expressions.BinaryExpression]) {
-        $left  = Rewrite-ExpressionLeaf $Expression.Left  $TupleMemberName $Replacement $ReplacementCount
-        $right = Rewrite-ExpressionLeaf $Expression.Right $TupleMemberName $Replacement $ReplacementCount
+        $left  = Convert-ExpressionLeaf $Expression.Left  $TupleMemberName $Replacement $ReplacementCount
+        $right = Convert-ExpressionLeaf $Expression.Right $TupleMemberName $Replacement $ReplacementCount
 
         $conversion = if ($Expression.Conversion) {
             [Linq.Expressions.LambdaExpression](
-                Rewrite-ExpressionLeaf $Expression.Conversion $TupleMemberName $Replacement $ReplacementCount
+                Convert-ExpressionLeaf $Expression.Conversion $TupleMemberName $Replacement $ReplacementCount
             )
         }
         else {
@@ -405,16 +405,16 @@ function Rewrite-ExpressionLeaf {
     }
 
     if ($Expression -is [Linq.Expressions.ConditionalExpression]) {
-        $test = Rewrite-ExpressionLeaf $Expression.Test $TupleMemberName $Replacement $ReplacementCount
-        $yes  = Rewrite-ExpressionLeaf $Expression.IfTrue $TupleMemberName $Replacement $ReplacementCount
-        $no   = Rewrite-ExpressionLeaf $Expression.IfFalse $TupleMemberName $Replacement $ReplacementCount
+        $test = Convert-ExpressionLeaf $Expression.Test $TupleMemberName $Replacement $ReplacementCount
+        $yes  = Convert-ExpressionLeaf $Expression.IfTrue $TupleMemberName $Replacement $ReplacementCount
+        $no   = Convert-ExpressionLeaf $Expression.IfFalse $TupleMemberName $Replacement $ReplacementCount
         return $Expression.Update($test, $yes, $no)
     }
 
     if ($Expression -is [Linq.Expressions.NewExpression]) {
         $args = [Linq.Expressions.Expression[]]@(
             $Expression.Arguments | ForEach-Object {
-                Rewrite-ExpressionLeaf $_ $TupleMemberName $Replacement $ReplacementCount
+                Convert-ExpressionLeaf $_ $TupleMemberName $Replacement $ReplacementCount
             }
         )
         return $Expression.Update($args)
@@ -423,7 +423,7 @@ function Rewrite-ExpressionLeaf {
     if ($Expression -is [Linq.Expressions.NewArrayExpression]) {
         $items = [Linq.Expressions.Expression[]]@(
             $Expression.Expressions | ForEach-Object {
-                Rewrite-ExpressionLeaf $_ $TupleMemberName $Replacement $ReplacementCount
+                Convert-ExpressionLeaf $_ $TupleMemberName $Replacement $ReplacementCount
             }
         )
         return $Expression.Update($items)
@@ -431,7 +431,7 @@ function Rewrite-ExpressionLeaf {
 
     if ($Expression -is [Linq.Expressions.IndexExpression]) {
         $obj = if ($Expression.Object) {
-            Rewrite-ExpressionLeaf $Expression.Object $TupleMemberName $Replacement $ReplacementCount
+            Convert-ExpressionLeaf $Expression.Object $TupleMemberName $Replacement $ReplacementCount
         }
         else {
             $null
@@ -439,7 +439,7 @@ function Rewrite-ExpressionLeaf {
 
         $args = [Linq.Expressions.Expression[]]@(
             $Expression.Arguments | ForEach-Object {
-                Rewrite-ExpressionLeaf $_ $TupleMemberName $Replacement $ReplacementCount
+                Convert-ExpressionLeaf $_ $TupleMemberName $Replacement $ReplacementCount
             }
         )
 
@@ -447,13 +447,13 @@ function Rewrite-ExpressionLeaf {
     }
 
     if ($Expression -is [Linq.Expressions.TypeBinaryExpression]) {
-        $obj = Rewrite-ExpressionLeaf $Expression.Expression $TupleMemberName $Replacement $ReplacementCount
+        $obj = Convert-ExpressionLeaf $Expression.Expression $TupleMemberName $Replacement $ReplacementCount
         return $Expression.Update($obj)
     }
 
     if ($Expression.NodeType -eq [Linq.Expressions.ExpressionType]::Extension -and $Expression.CanReduce) {
         $reduced = $Expression.Reduce()
-        return Rewrite-ExpressionLeaf $reduced $TupleMemberName $Replacement $ReplacementCount
+        return Convert-ExpressionLeaf $reduced $TupleMemberName $Replacement $ReplacementCount
     }
 
     return $Expression
@@ -1020,8 +1020,8 @@ function Convert-DynamicToPersistedCallSites {
             }
         )
 
-        Write-Host "CALLSITE_$index=$($recipe.Kind)"
-        Write-Host "CALLSITE_${index}_DELEGATE=$($delegateType.FullName)"
+        Write-Verbose "CALLSITE_$index=$($recipe.Kind)"
+        Write-Verbose "CALLSITE_${index}_DELEGATE=$($delegateType.FullName)"
 
         return $replacement
     }
@@ -1274,7 +1274,7 @@ function New-CallSiteInitializerExpression {
     )
 }
 
-function Define-CallSiteTypeInitializer {
+function New-CallSiteTypeInitializer {
     param(
         [Parameter(Mandatory)]
         [Reflection.Emit.TypeBuilder]$TypeBuilder,
@@ -1334,7 +1334,7 @@ function Define-CallSiteTypeInitializer {
         -Lambda $lambda `
         -MethodBuilder $helper
 
-    Write-Host 'CALLSITE_INIT_HELPER=True'
+    Write-Verbose 'CALLSITE_INIT_HELPER=True'
 
     if ($Deferred) {
         return $helper
@@ -1532,9 +1532,9 @@ function Export-PersistedClass {
         $boxedValue
     }
 
-    Write-Host "EXTRACTED_VALUE_TYPE=$($value.Type.FullName)"
-    Write-Host "PARAM_SLOT=$slot"
-    Write-Host "PARAM_TUPLE_MEMBER=$tupleMemberName"
+    Write-Verbose "EXTRACTED_VALUE_TYPE=$($value.Type.FullName)"
+    Write-Verbose "PARAM_SLOT=$slot"
+    Write-Verbose "PARAM_TUPLE_MEMBER=$tupleMemberName"
 
     $x = [Linq.Expressions.Expression]::Parameter(
         $sig.ParameterTypes[0],
@@ -1543,13 +1543,13 @@ function Export-PersistedClass {
 
     $replacementCount = 0
 
-    $rewritten = Rewrite-ExpressionLeaf `
+    $rewritten = Convert-ExpressionLeaf `
         -Expression $value `
         -TupleMemberName $tupleMemberName `
         -Replacement $x `
         -ReplacementCount ([ref]$replacementCount)
 
-    Write-Host "LEAF_REPLACEMENTS=$replacementCount"
+    Write-Verbose "LEAF_REPLACEMENTS=$replacementCount"
 
     if ($replacementCount -ne 1) {
         throw "Expected exactly one '$tupleMemberName' replacement; got $replacementCount."
@@ -1560,7 +1560,7 @@ function Export-PersistedClass {
     }
 
     $dynamicBefore = Get-ExpressionDynamicCount $rewritten
-    Write-Host "DYNAMIC_NODES_BEFORE=$dynamicBefore"
+    Write-Verbose "DYNAMIC_NODES_BEFORE=$dynamicBefore"
 
     $sites = [System.Collections.Generic.List[object]]::new()
 
@@ -1571,8 +1571,8 @@ function Export-PersistedClass {
 
     $dynamicAfter = Get-ExpressionDynamicCount $persistable
 
-    Write-Host "PERSISTED_CALLSITES=$($sites.Count)"
-    Write-Host "DYNAMIC_NODES_AFTER=$dynamicAfter"
+    Write-Verbose "PERSISTED_CALLSITES=$($sites.Count)"
+    Write-Verbose "DYNAMIC_NODES_AFTER=$dynamicAfter"
 
     if ($dynamicAfter -ne 0) {
         throw "CallSite persistence rewrite incomplete: $dynamicAfter DynamicExpression node(s) remain."
@@ -1633,178 +1633,30 @@ function Export-PersistedClass {
         -Lambda $coreLambda `
         -MethodBuilder $mb
 
-    $cctor = Define-CallSiteTypeInitializer `
+    $cctor = New-CallSiteTypeInitializer `
         -TypeBuilder $tb `
         -Sites $sites
 
-    if ($cctor) {
-        Write-Host "TYPE_INITIALIZER=True"
-    }
-    else {
-        Write-Host "TYPE_INITIALIZER=False"
-    }
-
     $null = $tb.CreateType()
     $pab.Save($fullOut)
 
-    $asm = [Reflection.Assembly]::LoadFrom($fullOut)
-    $t = $asm.GetType($typeAst.Name, $true)
-    $o = [Activator]::CreateInstance($t)
-    $m = $t.GetMethod($sig.Name)
-
-    Write-Host "FILE=$([IO.File]::Exists($fullOut))"
-    Write-Host "CORE_DEBUG_VIEW=$debugPath"
-    Write-Host "RELOADED_METHOD=$m"
-    Write-Host "METHOD_BODY=$($null -ne $m.GetMethodBody())"
-    Write-Host "LAMBDA_TYPEBUILDER_RETARGETED=$($emitResult.TypeBuilderSet)"
-
-    $result = $m.Invoke(
-        $o,
-        [object[]]@([Convert]::ChangeType(41, $sig.ParameterTypes[0]))
-    )
-
-    Write-Host "RESULT=$result"
-
-    if ($result -ne 42) {
-        throw "Expected 42, got $result."
+    [pscustomobject]@{
+        OutputPath = $fullOut
+        ClassName = $typeAst.Name
+        MethodName = $sig.Name
+        ReturnType = $sig.ReturnType.FullName
+        ParameterType = $sig.ParameterTypes[0].FullName
+        ParameterSlot = $slot
+        TupleMember = $tupleMemberName
+        LeafReplacements = $replacementCount
+        DynamicNodesBefore = $dynamicBefore
+        PersistedCallSites = $sites.Count
+        DynamicNodesAfter = $dynamicAfter
+        TypeInitializer = $null -ne $cctor
+        CoreDebugView = $debugPath
+        LambdaTypeBuilderRetargeted = $emitResult.TypeBuilderSet
+        FileWritten = [IO.File]::Exists($fullOut)
     }
-
-    Write-Host 'INTERNAL_RESULT_42=PASS'
-
-    $fullOut
-}
-
-function Export-PersistedThisProof {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)][string]$Source,
-        [Parameter(Mandatory)][string]$OutputPath,
-        [string]$MethodName = 'Add',
-        [switch]$Optimize
-    )
-
-    $parsed = Get-ClassAst $Source
-    $typeAst = $parsed.TypeAst
-    $member = @($typeAst.Members | Where-Object {
-        $_ -is [System.Management.Automation.Language.FunctionMemberAst] -and
-        -not $_.IsConstructor -and $_.Name -eq $MethodName
-    }) | Select-Object -First 1
-    if (-not $member) { throw "Method '$MethodName' was not found." }
-
-    $sig = Get-MemberSignature $member
-    if ($sig.IsStatic -or $sig.ParameterTypes.Count -ne 1) {
-        throw 'The real-this proof requires one instance method with one parameter.'
-    }
-
-    $fullOut = [IO.Path]::GetFullPath($OutputPath)
-    [IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($fullOut)) | Out-Null
-    $assemblyName = "$($typeAst.Name)_ThisProof_$([Guid]::NewGuid().ToString('N'))"
-    $pab = [Reflection.Emit.PersistedAssemblyBuilder]::new(
-        [Reflection.AssemblyName]::new($assemblyName), [object].Assembly)
-    $module = $pab.DefineDynamicModule($assemblyName)
-    $tb = $module.DefineType($typeAst.Name, [Reflection.TypeAttributes]'Public,Class')
-    $null = $tb.DefineDefaultConstructor([Reflection.MethodAttributes]'Public')
-    $baseField = $tb.DefineField('Base', [int], [Reflection.FieldAttributes]'Public')
-
-    # The real FunctionMemberAst must see its actual declaring CLR TypeBuilder.
-    $typeProperty = $typeAst.GetType().GetProperty('Type', $script:BFInst)
-    $typeProperty.SetValue($typeAst, $tb)
-    $lowering = Get-SmaMemberLowering -Member $member -Optimize:$Optimize
-    if (-not $lowering.NameToIndexMap) { throw 'SMA did not expose NameToIndexMap.' }
-
-    $thisSlot = [int]$lowering.NameToIndexMap['this']
-    $parameterName = $sig.ParameterNames[0]
-    $parameterSlot = [int]$lowering.NameToIndexMap[$parameterName]
-    $thisTupleMember = 'Item{0:D3}' -f $thisSlot
-    $parameterTupleMember = 'Item{0:D3}' -f $parameterSlot
-    Write-Host "THIS_SLOT=$thisSlot"
-    Write-Host "THIS_TUPLE_MEMBER=$thisTupleMember"
-    Write-Host "PARAM_SLOT=$parameterSlot"
-    Write-Host "PARAM_TUPLE_MEMBER=$parameterTupleMember"
-
-    $pipeAdd = Find-ReturnPipeAdd $lowering.Lambda.Body
-    if (-not $pipeAdd) { throw 'Could not find SMA returnPipe.Add(value) expression.' }
-    $boxedValue = $pipeAdd.Arguments[0]
-    $value = if ($boxedValue -is [Linq.Expressions.UnaryExpression] -and
-        $boxedValue.NodeType -eq [Linq.Expressions.ExpressionType]::Convert -and
-        $boxedValue.Type -eq [object]) { $boxedValue.Operand } else { $boxedValue }
-
-    # LambdaCompiler maps this extra leading lambda parameter to CLR arg0.
-    # Keeping its delegate-facing type as object avoids constructing a delegate
-    # type over an unfinished TypeBuilder; the cast restores the exact CLR type.
-    $self = [Linq.Expressions.Expression]::Parameter([object], 'self')
-    $selfAsGeneratedType = [Linq.Expressions.Expression]::Convert($self, $tb)
-    $argument = [Linq.Expressions.Expression]::Parameter(
-        $sig.ParameterTypes[0], $parameterName)
-
-    $thisReplacementCount = 0
-    $rewrittenThis = Rewrite-ExpressionLeaf -Expression $value `
-        -TupleMemberName $thisTupleMember -Replacement $selfAsGeneratedType `
-        -ReplacementCount ([ref]$thisReplacementCount)
-    $parameterReplacementCount = 0
-    $rewritten = Rewrite-ExpressionLeaf -Expression $rewrittenThis `
-        -TupleMemberName $parameterTupleMember -Replacement $argument `
-        -ReplacementCount ([ref]$parameterReplacementCount)
-    Write-Host "THIS_REPLACEMENTS=$thisReplacementCount"
-    Write-Host "PARAM_REPLACEMENTS=$parameterReplacementCount"
-    if ($thisReplacementCount -ne 1 -or $parameterReplacementCount -ne 1) {
-        throw "Expected one this and one parameter replacement; got $thisReplacementCount and $parameterReplacementCount."
-    }
-
-    $remainingTupleMembers = [Collections.Generic.HashSet[string]]::new()
-    $remainingLocalsParameters = 0
-    $inspectionStack = [Collections.Generic.Stack[Linq.Expressions.Expression]]::new()
-    $inspectionStack.Push($rewritten)
-    while ($inspectionStack.Count) {
-        $inspectionNode = $inspectionStack.Pop()
-        if ($inspectionNode -is [Linq.Expressions.ParameterExpression] -and
-            $inspectionNode.Name -eq 'locals') {
-            $remainingLocalsParameters++
-        }
-        if ($inspectionNode -is [Linq.Expressions.MemberExpression] -and
-            $inspectionNode.Expression -is [Linq.Expressions.ParameterExpression] -and
-            $inspectionNode.Expression.Name -eq 'locals') {
-            $null = $remainingTupleMembers.Add($inspectionNode.Member.Name)
-        }
-        foreach ($inspectionChild in Get-ExpressionChildren $inspectionNode) {
-            if ($inspectionChild) { $inspectionStack.Push($inspectionChild) }
-        }
-    }
-    Write-Host "REMAINING_TUPLE_MEMBERS=$([string]::Join(',', $remainingTupleMembers))"
-    Write-Host "REMAINING_LOCALS_PARAMETERS=$remainingLocalsParameters"
-    $debugProperty = [Linq.Expressions.Expression].GetProperty('DebugView', $script:BFInst)
-    [IO.File]::WriteAllText(
-        [IO.Path]::ChangeExtension($fullOut, '.this-rewritten.txt'),
-        [string]$debugProperty.GetValue($rewritten),
-        [Text.UTF8Encoding]::new($false))
-
-    $dynamicBefore = Get-ExpressionDynamicCount $rewritten
-    Write-Host "DYNAMIC_NODES_BEFORE=$dynamicBefore"
-    $sites = [System.Collections.Generic.List[object]]::new()
-    $persistable = Convert-DynamicToPersistedCallSites `
-        -Expression $rewritten -TypeBuilder $tb -Sites $sites
-    $dynamicAfter = Get-ExpressionDynamicCount $persistable
-    Write-Host "PERSISTED_CALLSITES=$($sites.Count)"
-    Write-Host "DYNAMIC_NODES_AFTER=$dynamicAfter"
-    if ($dynamicAfter -ne 0) { throw "$dynamicAfter DynamicExpression nodes remain." }
-
-    $delegateType = [Linq.Expressions.Expression]::GetDelegateType(
-        [type[]]@([object], $sig.ParameterTypes[0], $sig.ReturnType))
-    $lambda = [Linq.Expressions.Expression]::Lambda(
-        $delegateType, $persistable, $sig.Name, $false,
-        [Linq.Expressions.ParameterExpression[]]@($self, $argument))
-    $method = $tb.DefineMethod(
-        $sig.Name, [Reflection.MethodAttributes]'Public,HideBySig,Virtual',
-        $sig.ReturnType, $sig.ParameterTypes)
-    $null = $method.DefineParameter(1, [Reflection.ParameterAttributes]::None, $parameterName)
-    $null = Write-MicrosoftLambdaToMethodBuilder -Lambda $lambda -MethodBuilder $method -ExplicitThis
-    $cctor = Define-CallSiteTypeInitializer -TypeBuilder $tb -Sites $sites
-    Write-Host "TYPE_INITIALIZER=$($null -ne $cctor)"
-    $null = $tb.CreateType()
-    $pab.Save($fullOut)
-    Write-Host "FILE=$([IO.File]::Exists($fullOut))"
-    Write-Host "METHOD_BODY=True"
-    $fullOut
 }
 
 $inputSource = [IO.File]::ReadAllText([IO.Path]::GetFullPath($SourcePath))

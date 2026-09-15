@@ -12,11 +12,17 @@ $outputAssembly = Join-Path $outputDirectory 'OneParameterProbe.dll'
 
 New-Item -ItemType Directory -Force -Path $outputDirectory | Out-Null
 
-& $experiment `
+$exportResult = & $experiment `
     -SourcePath $source `
     -ClassName OneParameterProbe `
     -MethodName AddOne `
     -OutputPath $outputAssembly
+
+if (@($exportResult).Count -ne 1 -or
+    -not $exportResult.FileWritten -or
+    $exportResult.DynamicNodesAfter -ne 0) {
+    throw 'The persistence experiment did not return one successful structured result.'
+}
 
 $assembly = [Reflection.Assembly]::LoadFrom($outputAssembly)
 $type = $assembly.GetType('OneParameterProbe', $true)

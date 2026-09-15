@@ -34,12 +34,14 @@ The persistence experiment currently requires all of the following:
 - a PowerShell class with one typed, non-static method;
 - exactly one typed method parameter;
 - SMA's optimized compilation path;
-- an expression shape and SMA binder types handled by the experiment;
-- a method that produces `42` when invoked with the value `41`, because the
-  current command is an executable proof rather than a general exporter.
+- an expression shape and SMA binder types handled by the experiment.
 
 Other methods, binders, control-flow shapes, constructors, static methods, and
 multiple parameters are not claimed to work.
+
+The experiment returns one structured result describing the emitted method,
+call-site rewrite, and output paths. The verification test owns the separate
+`AddOne(41) == 42` semantic assertion against the reloaded assembly.
 
 ## Run the verification
 
@@ -49,6 +51,9 @@ From the repository root:
 pwsh -NoLogo -NoProfile -File ./tests/Test-OneParameterPersistence.ps1
 pwsh -NoLogo -NoProfile -File ./probes/Test-SmaCompilation.ps1 -BaselineOnly
 ```
+
+CI restores and runs the pinned PowerShell `7.6.6` .NET tool so the required
+runtime capability is explicit rather than inherited from the runner image.
 
 Generated assemblies and diagnostic expression-tree views are written beneath
 `build/`, which is ignored by Git.
