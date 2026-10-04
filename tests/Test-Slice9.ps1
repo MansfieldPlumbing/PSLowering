@@ -101,7 +101,7 @@ if (`$threw0 -and `$threw511) {
 }
 "@
 
-$pwshExe = if (Test-Path 'C:\bin\psx\pwsh.exe') { 'C:\bin\psx\pwsh.exe' } else { (Get-Process -Id $PID).Path }
+$pwshExe = [Environment]::ProcessPath
 $childOut = & $pwshExe -NoProfile -Command $childCmd
 Write-Host $childOut
 if ($childOut -notmatch 'FRESH_PROCESS_SLICE9=PASS') {

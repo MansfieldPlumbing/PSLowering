@@ -127,7 +127,7 @@ if ($t9.GetMethod('VoiceRowIndex').Invoke($null, [object[]]@(510)) -ne 509) { ex
 Write-Output 'FRESH_PROCESS_ALL_SLICES=PASS'
 '@
 
-$pwshExe = if (Test-Path 'C:\bin\psx\pwsh.exe') { 'C:\bin\psx\pwsh.exe' } else { (Get-Process -Id $PID).Path }
+$pwshExe = [Environment]::ProcessPath
 $childOut = & $pwshExe -NoProfile -Command $childScript
 Write-Host $childOut
 if ($LASTEXITCODE -ne 0 -or $childOut -notmatch 'FRESH_PROCESS_ALL_SLICES=PASS') {

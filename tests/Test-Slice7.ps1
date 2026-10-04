@@ -45,8 +45,8 @@ $sub = $type.GetMethod('SubstringTest').Invoke($null, [object[]]@('Hello World',
 if ($sub -ne 'World') { throw "SubstringTest failed: expected 'World', got '$sub'" }
 
 # BuildGreeting
-$greeting = $type.GetMethod('BuildGreeting').Invoke($null, [object[]]@('Scott'))
-if ($greeting -ne 'Hello, Scott!') { throw "BuildGreeting failed: expected 'Hello, Scott!', got '$greeting'" }
+$greeting = $type.GetMethod('BuildGreeting').Invoke($null, [object[]]@('Reader'))
+if ($greeting -ne 'Hello, Reader!') { throw "BuildGreeting failed: expected 'Hello, Reader!', got '$greeting'" }
 
 # IsEmpty
 $emptyT = $type.GetMethod('IsEmpty').Invoke($null, [object[]]@(''))
@@ -65,19 +65,19 @@ $childCmd = @"
 `$t = `$asm.GetType('Slice7Fixture')
 `$max = `$t.GetMethod('StaticMath').Invoke(`$null, [object[]]@(15, 27))
 `$sub = `$t.GetMethod('SubstringTest').Invoke(`$null, [object[]]@('Hello World', 6, 5))
-`$greeting = `$t.GetMethod('BuildGreeting').Invoke(`$null, [object[]]@('Antigravity'))
+`$greeting = `$t.GetMethod('BuildGreeting').Invoke(`$null, [object[]]@('Reader'))
 `$emptyT = `$t.GetMethod('IsEmpty').Invoke(`$null, [object[]]@(''))
 `$emptyF = `$t.GetMethod('IsEmpty').Invoke(`$null, [object[]]@('hello'))
 `$combined = `$t.GetMethod('PathCombine').Invoke(`$null, [object[]]@('dir', 'file.dat'))
 
-if (`$max -eq 27 -and `$sub -eq 'World' -and `$greeting -eq 'Hello, Antigravity!' -and `$emptyT -and -not `$emptyF -and `$combined -eq [IO.Path]::Combine('dir', 'file.dat')) {
+if (`$max -eq 27 -and `$sub -eq 'World' -and `$greeting -eq 'Hello, Reader!' -and `$emptyT -and -not `$emptyF -and `$combined -eq [IO.Path]::Combine('dir', 'file.dat')) {
     Write-Output 'FRESH_PROCESS_SLICE7=PASS'
 } else {
     Write-Output 'FRESH_PROCESS_SLICE7=FAIL'
 }
 "@
 
-$pwshExe = if (Test-Path 'C:\bin\psx\pwsh.exe') { 'C:\bin\psx\pwsh.exe' } else { (Get-Process -Id $PID).Path }
+$pwshExe = [Environment]::ProcessPath
 $childOut = & $pwshExe -NoProfile -Command $childCmd
 Write-Host $childOut
 if ($childOut -notmatch 'FRESH_PROCESS_SLICE7=PASS') {

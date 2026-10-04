@@ -93,7 +93,7 @@ if (`$a.Length -eq 5 -and `$s -eq 15 -and `$scaled[1] -eq 5.0 -and `$lit[3] -eq 
 }
 "@
 
-$pwshExe = if (Test-Path 'C:\bin\psx\pwsh.exe') { 'C:\bin\psx\pwsh.exe' } else { (Get-Process -Id $PID).Path }
+$pwshExe = [Environment]::ProcessPath
 $childOut = & $pwshExe -NoProfile -Command $childCmd
 Write-Host $childOut
 if ($childOut -notmatch 'FRESH_PROCESS_SLICE6=PASS') {

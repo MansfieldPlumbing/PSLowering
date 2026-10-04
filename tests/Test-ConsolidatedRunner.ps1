@@ -6,13 +6,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$pwshExe = if ($PwshPath) {
-    $PwshPath
-} elseif (Test-Path 'C:\bin\psx\pwsh.exe') {
-    'C:\bin\psx\pwsh.exe'
-} else {
-    (Get-Process -Id $PID).Path
-}
+$pwshExe = if ($PwshPath) { $PwshPath } else { [Environment]::ProcessPath }
 $repoRoot = Split-Path $PSScriptRoot -Parent
 $buildDir = Join-Path $repoRoot 'build'
 if (-not (Test-Path $buildDir)) {
