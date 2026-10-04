@@ -82,3 +82,7 @@ V SemanticsFixture.ps1 SemanticsFixture StringEqual       @(@('A', 'a'), @('abc'
 V SemanticsFixture.ps1 SemanticsFixture StringEqualCase   @(@('A', 'a'), @('abc', 'abc'))
 V SemanticsFixture.ps1 SemanticsFixture StringNotEqual    @(@('A', 'a'), @('a', 'b'))
 V SemanticsFixture.ps1 SemanticsFixture StringLess        @(@('a', 'B'), @('B', 'a'), @('a', 'a'), @('A', 'a'))
+
+# Pwsh consumer: FindProfile from setup.ps1's managed host
+$profileFiles = [string[]]@('/data/files/notes.txt', '/data/files/PROFILE.PS1', '/data/files/Profile.ps1')
+V PwshFindProfileFixture.ps1 PwshNativeHost FindProfile @(@($profileFiles, 0, 'none'), @($profileFiles, 2, 'none'), @([string[]]@('/a/b.ps1'), 0, 'none'), @([string[]]@(), 0, 'none'), @($profileFiles, 3, 'none'), @([string[]]@('Profile.ps1x', 'xProfile.ps1'), 0, 'none'))

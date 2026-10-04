@@ -420,6 +420,13 @@ function Emit-ExpressionNode {
             return
         }
         if ($Expr.Member -is [Reflection.FieldInfo]) {
+            # A literal (const or enum member) has no storage to load; its
+            # value is the constant, as in LambdaCompiler.EmitMemberExpression.
+            if ($Expr.Member.IsLiteral) {
+                $literalType = if ($Expr.Member.FieldType.IsEnum) { $Expr.Member.FieldType.GetEnumUnderlyingType() } else { $Expr.Member.FieldType }
+                Emit-Constant -IL $IL -Expr ([Linq.Expressions.Expression]::Constant($Expr.Member.GetRawConstantValue(), $literalType))
+                return
+            }
             if ($Expr.Expression) {
                 Emit-ExpressionNode -IL $IL -Expr $Expr.Expression -Context $Context
                 $IL.Emit([Reflection.Emit.OpCodes]::Ldfld, $Expr.Member)
