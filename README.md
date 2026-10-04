@@ -64,16 +64,27 @@ compiled assembly.
 
 A declared typed subset, exercised by the fixtures in `tests/fixtures`:
 
+- every class in the source file, compiled into one assembly, so classes can
+  use each other's types and members, including in generic types such as
+  `List[CellBox]`;
+- typed properties, compiled as public fields, with initial values; static
+  properties are initialized by the type initializer, instance properties
+  before each constructor body;
+- constructors with typed parameters, and `$this` in constructors and
+  instance methods;
 - static and instance methods with zero or more typed parameters and typed
   returns, including `[void]`;
 - constants, typed locals, assignment, compound assignment (`+=`, `-=`, `*=`,
-  `/=`, `%=`) on variables, increment and decrement;
+  `/=`, `%=`) on variables, fields, properties and array elements, increment
+  and decrement;
 - arithmetic, comparison and Boolean operators on operands of the same type,
-  and string concatenation with `+`;
+  string concatenation with `+`, and the bitwise operators `-band`, `-bor`,
+  `-bxor`, `-bnot`, `-shl` and `-shr`;
 - `if`/`elseif`/`else`, `while`, `for`, `foreach` over a typed array,
   `break`, `continue` and early `return`;
-- typed arrays: creation, literals, indexing, element assignment and
-  `Length`;
+- typed arrays: creation, literals (typed by their target), indexing with
+  PowerShell's negative indexes (`$a[-1]` is the last element), element
+  assignment and `Length`;
 - calls to .NET static and instance methods, properties, constants and
   constructors, bound by exact signature;
 - `throw` and `try`/`catch`/`finally`.
@@ -82,15 +93,16 @@ Anything else is rejected before an assembly is written, with its line,
 column and reason: commands, pipelines, script blocks, expandable strings,
 `do`, `switch`, labeled `break` and `continue`, `break` or `continue`
 outside a loop, `foreach` over anything but a typed one-dimensional array,
-compound assignment to an array element, and operators on mixed types
-(`tests/Test-Rejections.ps1`). Nothing falls back to running the original
-script.
+operators on mixed types, classes deriving from anything but
+`System.Object`, untyped properties and parameters, and base constructor
+calls with arguments (`tests/Test-Rejections.ps1`). Nothing falls back to
+running the original script.
 
 ## Guarantees and how they are checked
 
 | Guarantee | Checked by |
 | --- | --- |
-| A compiled method returns what the same PowerShell method returns, or both throw | `tests/oracle/PowerShellSourceOracle.ps1`: every fixture method run as PowerShell and as IL on the same inputs (196 calls) |
+| A compiled method returns what the same PowerShell method returns, or both throw | `tests/oracle/PowerShellSourceOracle.ps1`: every fixture method run as PowerShell and as IL on the same inputs (221 calls) |
 | The emitter writes the IL the framework's own compiler would accept for the same tree | `tests/oracle/MicrosoftLambdaCompilerOracle.ps1`: the same trees compiled by `LambdaCompiler`, results compared |
 | Output references no `System.Management.Automation` type and no dynamic call site; its only assembly reference is `System.Private.CoreLib` | `tests/Test-ZeroSmaHost.ps1` |
 | The same input builds byte-identical assemblies with the same MVID | slices 1, 2, 4 and 5, which build twice and compare SHA-256 and MVID |

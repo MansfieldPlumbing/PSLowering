@@ -40,6 +40,13 @@ function Get-CompiledType([string] $Path, [string] $Class) {
 }
 
 function Invoke-Side([type] $Type, [string] $Method, [object[]] $Arguments) {
+    # Each side gets its own copy of array arguments, so a method that writes
+    # into an array cannot change the other side's input.
+    $copy = [object[]]::new($Arguments.Length)
+    for ($i = 0; $i -lt $Arguments.Length; $i++) {
+        $copy[$i] = if ($Arguments[$i] -is [Array]) { $Arguments[$i].Clone() } else { $Arguments[$i] }
+    }
+    $Arguments = $copy
     $m = $Type.GetMethod($Method)
     $target = if ($m.IsStatic) { $null } else { [Activator]::CreateInstance($Type) }
     try { [pscustomobject]@{ Value = $m.Invoke($target, $Arguments); Error = $null } }

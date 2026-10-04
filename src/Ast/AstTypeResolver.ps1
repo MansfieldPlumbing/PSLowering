@@ -1,6 +1,10 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+# Class name -> mirror type for the classes being compiled together; set by
+# Export-LoweredAssembly for the duration of one compilation.
+$script:LoweringClassTypes = @{}
+
 function Resolve-AstType {
     <#
     .SYNOPSIS
@@ -13,6 +17,28 @@ function Resolve-AstType {
 
     if ($TypeName -is [Type]) {
         return $TypeName
+    }
+
+    # Classes compiled together resolve to their mirror types first, so a
+    # same-named PowerShell class loaded in this session is never chosen.
+    if ($TypeName -is [System.Management.Automation.Language.TypeName] -or $TypeName -is [string]) {
+        $simple = if ($TypeName -is [string]) { $TypeName.Trim().Trim('[', ']') } else { $TypeName.FullName }
+        if ($script:LoweringClassTypes -and $script:LoweringClassTypes.ContainsKey($simple)) {
+            return $script:LoweringClassTypes[$simple]
+        }
+    }
+
+    # Generic and array names resolve structurally, so their arguments can be
+    # classes compiled together: [System.Collections.Generic.List[ConsoleCell]].
+    if ($TypeName -is [System.Management.Automation.Language.GenericTypeName]) {
+        $arguments = [Type[]]@($TypeName.GenericArguments | ForEach-Object { Resolve-AstType $_ })
+        $definitionName = '{0}`{1}' -f $TypeName.TypeName.FullName, $arguments.Count
+        $definition = Resolve-AstType $definitionName
+        return $definition.MakeGenericType($arguments)
+    }
+    if ($TypeName -is [System.Management.Automation.Language.ArrayTypeName]) {
+        $element = Resolve-AstType $TypeName.ElementType
+        return $(if ($TypeName.Rank -eq 1) { $element.MakeArrayType() } else { $element.MakeArrayType($TypeName.Rank) })
     }
 
     if ($TypeName -is [System.Management.Automation.Language.ITypeName]) {

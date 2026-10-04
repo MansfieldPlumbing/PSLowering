@@ -101,3 +101,14 @@ V LoopsFixture.ps1 LoopsFixture CountChars               @(@(, [string[]]@('ab',
 V SemanticsFixture.ps1 SemanticsFixture CompoundInt    @(@(1, 2), @(-5, 3), @($max, 1))
 V SemanticsFixture.ps1 SemanticsFixture CompoundDivide @(@(7, 2), @(5, 2), @(1, 0))
 V SemanticsFixture.ps1 SemanticsFixture Concat         @(@('a', 'b'), @('', ''))
+
+# Classes: fields, constructors, initializers, classes using each other, bitwise operators
+V ClassesFixture.ps1 ClassesFixture UseInstance @(@(1, 2), @(0, 0), @($max, 1))
+V ClassesFixture.ps1 ClassesFixture DefaultCell @(, @())
+V ClassesFixture.ps1 ClassesFixture PackedCell  @(@(5, 1), @(0, 0), @(-1, 2))
+V ClassesFixture.ps1 ClassesFixture SumCells    @(@(0), @(1), @(5))
+V ClassesFixture.ps1 ClassesFixture PaletteAt   @(@(0), @(2), @(3), @(-1))
+V ClassesFixture.ps1 ClassesFixture BaseValue   @(, @())
+V ClassesFixture.ps1 ClassesFixture Bits        @(@(12, 10), @(0, -1), @($max, $min))
+V ClassesFixture.ps1 ClassesFixture Shifts      @(@(1, 0), @(1, 31), @(-8, 2), @(5, 33), @(-1, 1))
+V ClassesFixture.ps1 ClassesFixture SetLast     @(@([int[]]@(1, 2, 3), 9), @([int[]]@(4, 5), 7))

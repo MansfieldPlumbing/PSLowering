@@ -24,7 +24,6 @@ $cases = [ordered]@{
     BreakOutsideLoop  = @('[int] $i = 0; break; return $i', 'break outside a loop')
     ContinueOutside   = @('[int] $i = 0; continue; return $i', 'continue outside a loop')
     ForeachNonArray   = @('[int] $n = 3; [int] $s = 0; foreach ($x in $n) { $s++ }; return $s', 'typed one-dimensional array')
-    CompoundOnElement = @('[int[]] $a = [int[]]::new(2); $a[0] += 1; return $a[0]', 'only on a variable')
     CompoundMixed     = @('[int] $i = 1; [double] $d = 1.5; $i += $d; return $i', 'identical operand types')
     BinaryMixed       = @('[int] $i = 1; [double] $d = 1.5; return $i + $d', 'identical operand types')
     Command           = @('Get-Date; return 0', 'Commands and cmdlets are not allowed')

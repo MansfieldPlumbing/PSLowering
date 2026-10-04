@@ -1,6 +1,53 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+# Mirror member -> output member for the classes being compiled together, set
+# by Export-LoweredAssembly for one compilation. Empty: operands pass through.
+$script:IlMap = @{ Types = @{}; Members = @{} }
+
+function Get-IlType([Type] $Type) {
+    if ($null -eq $Type) { return $null }
+    if ($script:IlMap.Types.ContainsKey($Type)) { return $script:IlMap.Types[$Type] }
+    if ($Type.IsArray) {
+        $element = Get-IlType $Type.GetElementType()
+        if ($element -ne $Type.GetElementType()) { return $(if ($Type.GetArrayRank() -eq 1) { $element.MakeArrayType() } else { $element.MakeArrayType($Type.GetArrayRank()) }) }
+        return $Type
+    }
+    if ($Type.IsConstructedGenericType) {
+        $arguments = [Type[]]@($Type.GetGenericArguments() | ForEach-Object { Get-IlType $_ })
+        $changed = $false
+        $original = $Type.GetGenericArguments()
+        for ($i = 0; $i -lt $arguments.Length; $i++) { if ($arguments[$i] -ne $original[$i]) { $changed = $true } }
+        if ($changed) { return $Type.GetGenericTypeDefinition().MakeGenericType($arguments) }
+    }
+    if ($Type.Assembly.GetName().Name -like 'PSLoweringMirror*') { throw "Type '$($Type.Name)' has no compiled counterpart." }
+    $Type
+}
+
+function Get-IlMember([Reflection.MemberInfo] $Member) {
+    if ($script:IlMap.Members.ContainsKey($Member)) { return $script:IlMap.Members[$Member] }
+    if ($Member.DeclaringType -and $Member.DeclaringType.Assembly.GetName().Name -like 'PSLoweringMirror*') {
+        throw "'$($Member.DeclaringType.Name).$($Member.Name)' is used but not compiled; was it left out with -MethodNames?"
+    }
+    $declaring = $Member.DeclaringType
+    if ($declaring -and $declaring.IsConstructedGenericType) {
+        $mapped = Get-IlType $declaring
+        if ($mapped -ne $declaring) {
+            if ($Member -is [Reflection.MethodInfo] -and $Member.IsGenericMethod) {
+                throw "Generic method '$($Member.Name)' on '$($declaring.Name)' over a compiled class is not supported."
+            }
+            # A member of a constructed type shares its definition's metadata token.
+            $definition = $declaring.GetGenericTypeDefinition().GetMembers([Reflection.BindingFlags]'Public,NonPublic,Instance,Static') |
+                Where-Object { $_.MetadataToken -eq $Member.MetadataToken -and $_.Module -eq $Member.Module } | Select-Object -First 1
+            if (-not $definition) { throw "No definition found for '$($Member.Name)' on '$($declaring.Name)'." }
+            if ($Member -is [Reflection.ConstructorInfo]) { return [Reflection.Emit.TypeBuilder]::GetConstructor($mapped, $definition) }
+            if ($Member -is [Reflection.MethodInfo]) { return [Reflection.Emit.TypeBuilder]::GetMethod($mapped, $definition) }
+            if ($Member -is [Reflection.FieldInfo]) { return [Reflection.Emit.TypeBuilder]::GetField($mapped, $definition) }
+        }
+    }
+    $Member
+}
+
 function Write-IlArgumentLoad([Reflection.Emit.ILGenerator]$IL, [int]$Index) {
     switch ($Index) {
         0 { $IL.Emit([Reflection.Emit.OpCodes]::Ldarg_0); return }
@@ -64,7 +111,7 @@ function Write-IlArrayLoad([Reflection.Emit.ILGenerator]$IL, [Type]$ElementType)
     if ($ElementType -eq [long]) { $IL.Emit([Reflection.Emit.OpCodes]::Ldelem_I8); return }
     if ($ElementType -eq [bool]) { $IL.Emit([Reflection.Emit.OpCodes]::Ldelem_I1); return }
     if (-not $ElementType.IsValueType) { $IL.Emit([Reflection.Emit.OpCodes]::Ldelem_Ref); return }
-    $IL.Emit([Reflection.Emit.OpCodes]::Ldelem, $ElementType)
+    $IL.Emit([Reflection.Emit.OpCodes]::Ldelem, (Get-IlType $ElementType))
 }
 
 function Write-IlArrayStore([Reflection.Emit.ILGenerator]$IL, [Type]$ElementType) {
@@ -78,7 +125,7 @@ function Write-IlArrayStore([Reflection.Emit.ILGenerator]$IL, [Type]$ElementType
     if ($ElementType -eq [long]) { $IL.Emit([Reflection.Emit.OpCodes]::Stelem_I8); return }
     if ($ElementType -eq [bool]) { $IL.Emit([Reflection.Emit.OpCodes]::Stelem_I1); return }
     if (-not $ElementType.IsValueType) { $IL.Emit([Reflection.Emit.OpCodes]::Stelem_Ref); return }
-    $IL.Emit([Reflection.Emit.OpCodes]::Stelem, $ElementType)
+    $IL.Emit([Reflection.Emit.OpCodes]::Stelem, (Get-IlType $ElementType))
 }
 
 function Write-IlConstant {
@@ -188,15 +235,15 @@ function Write-IlConversion {
     if ($ToType -eq [ushort]) { $IL.Emit([Reflection.Emit.OpCodes]::Conv_U2); return }
 
     if ($ToType -eq [object] -and $FromType.IsValueType) {
-        $IL.Emit([Reflection.Emit.OpCodes]::Box, $FromType)
+        $IL.Emit([Reflection.Emit.OpCodes]::Box, (Get-IlType $FromType))
         return
     }
     if ($FromType -eq [object] -and $ToType.IsValueType) {
-        $IL.Emit([Reflection.Emit.OpCodes]::Unbox_Any, $ToType)
+        $IL.Emit([Reflection.Emit.OpCodes]::Unbox_Any, (Get-IlType $ToType))
         return
     }
     if (-not $ToType.IsValueType -and -not $FromType.IsValueType) {
-        $IL.Emit([Reflection.Emit.OpCodes]::Castclass, $ToType)
+        $IL.Emit([Reflection.Emit.OpCodes]::Castclass, (Get-IlType $ToType))
         return
     }
 
@@ -234,7 +281,7 @@ function Write-IlExpression {
         # Declare local variables
         foreach ($var in $Expr.Variables) {
             if (-not $Context.Locals.ContainsKey($var)) {
-                $loc = $IL.DeclareLocal($var.Type)
+                $loc = $IL.DeclareLocal((Get-IlType $var.Type))
                 $Context.Locals[$var] = $loc
             }
         }
@@ -334,8 +381,13 @@ function Write-IlExpression {
     # 9. Unary Not
     if ($Expr -is [Linq.Expressions.UnaryExpression] -and $Expr.NodeType -eq [Linq.Expressions.ExpressionType]::Not) {
         Write-IlExpression -IL $IL -Expr $Expr.Operand -Context $Context
-        $IL.Emit([Reflection.Emit.OpCodes]::Ldc_I4_0)
-        $IL.Emit([Reflection.Emit.OpCodes]::Ceq)
+        if ($Expr.Operand.Type -eq [bool]) {
+            $IL.Emit([Reflection.Emit.OpCodes]::Ldc_I4_0)
+            $IL.Emit([Reflection.Emit.OpCodes]::Ceq)
+        }
+        else {
+            $IL.Emit([Reflection.Emit.OpCodes]::Not)
+        }
         return
     }
 
@@ -362,14 +414,14 @@ function Write-IlExpression {
     if ($Expr -is [Linq.Expressions.NewArrayExpression]) {
         if ($Expr.NodeType -eq [Linq.Expressions.ExpressionType]::NewArrayBounds) {
             Write-IlExpression -IL $IL -Expr $Expr.Expressions[0] -Context $Context
-            $IL.Emit([Reflection.Emit.OpCodes]::Newarr, $Expr.Type.GetElementType())
+            $IL.Emit([Reflection.Emit.OpCodes]::Newarr, (Get-IlType $Expr.Type.GetElementType()))
             return
         }
         if ($Expr.NodeType -eq [Linq.Expressions.ExpressionType]::NewArrayInit) {
             $elemType = $Expr.Type.GetElementType()
             $count = $Expr.Expressions.Count
             Write-IlConstant -IL $IL -Expr ([Linq.Expressions.Expression]::Constant($count, [int]))
-            $IL.Emit([Reflection.Emit.OpCodes]::Newarr, $elemType)
+            $IL.Emit([Reflection.Emit.OpCodes]::Newarr, (Get-IlType $elemType))
             for ($i = 0; $i -lt $count; $i++) {
                 $IL.Emit([Reflection.Emit.OpCodes]::Dup)
                 Write-IlConstant -IL $IL -Expr ([Linq.Expressions.Expression]::Constant($i, [int]))
@@ -385,7 +437,7 @@ function Write-IlExpression {
         foreach ($arg in $Expr.Arguments) {
             Write-IlExpression -IL $IL -Expr $arg -Context $Context
         }
-        $IL.Emit([Reflection.Emit.OpCodes]::Newobj, $Expr.Constructor)
+        $IL.Emit([Reflection.Emit.OpCodes]::Newobj, (Get-IlMember $Expr.Constructor))
         return
     }
 
@@ -398,10 +450,18 @@ function Write-IlExpression {
             Write-IlExpression -IL $IL -Expr $arg -Context $Context
         }
         if ($Expr.Method.IsVirtual -and -not $Expr.Method.DeclaringType.IsValueType) {
-            $IL.Emit([Reflection.Emit.OpCodes]::Callvirt, $Expr.Method)
+            $IL.Emit([Reflection.Emit.OpCodes]::Callvirt, (Get-IlMember $Expr.Method))
         } else {
-            $IL.Emit([Reflection.Emit.OpCodes]::Call, $Expr.Method)
+            $IL.Emit([Reflection.Emit.OpCodes]::Call, (Get-IlMember $Expr.Method))
         }
+        return
+    }
+
+    # 9.4 Array element read through an IndexExpression (one-dimensional array)
+    if ($Expr -is [Linq.Expressions.IndexExpression] -and $null -eq $Expr.Indexer -and $Expr.Object.Type.IsArray -and $Expr.Arguments.Count -eq 1) {
+        Write-IlExpression -IL $IL -Expr $Expr.Object -Context $Context
+        Write-IlExpression -IL $IL -Expr $Expr.Arguments[0] -Context $Context
+        Write-IlArrayLoad -IL $IL -ElementType $Expr.Type
         return
     }
 
@@ -413,9 +473,9 @@ function Write-IlExpression {
                 Write-IlExpression -IL $IL -Expr $Expr.Expression -Context $Context
             }
             if ($getter.IsVirtual -and -not $getter.DeclaringType.IsValueType) {
-                $IL.Emit([Reflection.Emit.OpCodes]::Callvirt, $getter)
+                $IL.Emit([Reflection.Emit.OpCodes]::Callvirt, (Get-IlMember $getter))
             } else {
-                $IL.Emit([Reflection.Emit.OpCodes]::Call, $getter)
+                $IL.Emit([Reflection.Emit.OpCodes]::Call, (Get-IlMember $getter))
             }
             return
         }
@@ -429,9 +489,9 @@ function Write-IlExpression {
             }
             if ($Expr.Expression) {
                 Write-IlExpression -IL $IL -Expr $Expr.Expression -Context $Context
-                $IL.Emit([Reflection.Emit.OpCodes]::Ldfld, $Expr.Member)
+                $IL.Emit([Reflection.Emit.OpCodes]::Ldfld, (Get-IlMember $Expr.Member))
             } else {
-                $IL.Emit([Reflection.Emit.OpCodes]::Ldsfld, $Expr.Member)
+                $IL.Emit([Reflection.Emit.OpCodes]::Ldsfld, (Get-IlMember $Expr.Member))
             }
             return
         }
@@ -446,10 +506,10 @@ function Write-IlExpression {
         Write-IlExpression -IL $IL -Expr $Expr.Body -Context $Context
 
         foreach ($cb in $Expr.Handlers) {
-            $IL.BeginCatchBlock($cb.Test)
+            $IL.BeginCatchBlock((Get-IlType $cb.Test))
             if ($cb.Variable) {
                 if (-not $Context.Locals.ContainsKey($cb.Variable)) {
-                    $loc = $IL.DeclareLocal($cb.Variable.Type)
+                    $loc = $IL.DeclareLocal((Get-IlType $cb.Variable.Type))
                     $Context.Locals[$cb.Variable] = $loc
                 }
                 Write-IlLocalStore -IL $IL -Loc $Context.Locals[$cb.Variable]
@@ -541,6 +601,20 @@ function Write-IlExpression {
                 Write-IlArrayStore -IL $IL -ElementType $Expr.Left.Type
                 return
             }
+            if ($Expr.Left -is [Linq.Expressions.MemberExpression]) {
+                $member = $Expr.Left.Member
+                if ($Expr.Left.Expression) { Write-IlExpression -IL $IL -Expr $Expr.Left.Expression -Context $Context }
+                Write-IlExpression -IL $IL -Expr $Expr.Right -Context $Context
+                if ($member -is [Reflection.FieldInfo]) {
+                    $op = if ($member.IsStatic) { [Reflection.Emit.OpCodes]::Stsfld } else { [Reflection.Emit.OpCodes]::Stfld }
+                    $IL.Emit($op, (Get-IlMember $member))
+                    return
+                }
+                $setter = $member.GetSetMethod()
+                $op = if ($setter.IsVirtual -and -not $setter.DeclaringType.IsValueType) { [Reflection.Emit.OpCodes]::Callvirt } else { [Reflection.Emit.OpCodes]::Call }
+                $IL.Emit($op, (Get-IlMember $setter))
+                return
+            }
             throw "Assignment to unsupported target expression '$($Expr.Left.GetType().FullName)'."
         }
 
@@ -581,7 +655,7 @@ function Write-IlExpression {
         Write-IlExpression -IL $IL -Expr $Expr.Right -Context $Context
 
         if ($Expr.Method) {
-            $IL.Emit([Reflection.Emit.OpCodes]::Call, $Expr.Method)
+            $IL.Emit([Reflection.Emit.OpCodes]::Call, (Get-IlMember $Expr.Method))
             return
         }
 
@@ -598,6 +672,11 @@ function Write-IlExpression {
             'SubtractChecked' { $IL.Emit($(if ($isUnsigned) { [Reflection.Emit.OpCodes]::Sub_Ovf_Un } else { [Reflection.Emit.OpCodes]::Sub_Ovf })); return }
             'MultiplyChecked' { $IL.Emit($(if ($isUnsigned) { [Reflection.Emit.OpCodes]::Mul_Ovf_Un } else { [Reflection.Emit.OpCodes]::Mul_Ovf })); return }
             'Divide'   { $IL.Emit($(if ($isUnsigned) { [Reflection.Emit.OpCodes]::Div_Un } else { [Reflection.Emit.OpCodes]::Div })); return }
+            'And'         { $IL.Emit([Reflection.Emit.OpCodes]::And); return }
+            'Or'          { $IL.Emit([Reflection.Emit.OpCodes]::Or); return }
+            'ExclusiveOr' { $IL.Emit([Reflection.Emit.OpCodes]::Xor); return }
+            'LeftShift'   { $IL.Emit([Reflection.Emit.OpCodes]::Shl); return }
+            'RightShift'  { $IL.Emit($(if ($isUnsigned) { [Reflection.Emit.OpCodes]::Shr_Un } else { [Reflection.Emit.OpCodes]::Shr })); return }
             'Modulo'   { $IL.Emit($(if ($isUnsigned) { [Reflection.Emit.OpCodes]::Rem_Un } else { [Reflection.Emit.OpCodes]::Rem })); return }
             'Equal'    { $IL.Emit([Reflection.Emit.OpCodes]::Ceq); return }
             'NotEqual' {
@@ -641,14 +720,23 @@ function Write-IlMethodBody {
     #>
     param(
         [Parameter(Mandatory)][Linq.Expressions.LambdaExpression] $Lambda,
-        [Parameter(Mandatory)][Reflection.Emit.MethodBuilder] $MethodBuilder,
-        [switch] $IsStatic
+        # A MethodBuilder or ConstructorBuilder.
+        [Parameter(Mandatory)][object] $MethodBuilder,
+        [switch] $IsStatic,
+        # The lambda's first parameter is the instance ('this', argument 0).
+        [switch] $HasThis,
+        # Call System.Object's constructor first, as an instance constructor must.
+        [switch] $BaseConstructor
     )
 
     $il = $MethodBuilder.GetILGenerator()
+    if ($BaseConstructor) {
+        $il.Emit([Reflection.Emit.OpCodes]::Ldarg_0)
+        $il.Emit([Reflection.Emit.OpCodes]::Call, [object].GetConstructor([Type[]]@()))
+    }
 
     $paramMap = @{}
-    $offset = if ($IsStatic) { 0 } else { 1 }
+    $offset = if ($IsStatic -or $HasThis) { 0 } else { 1 }
 
     for ($i = 0; $i -lt $Lambda.Parameters.Count; $i++) {
         $p = $Lambda.Parameters[$i]
@@ -656,7 +744,7 @@ function Write-IlMethodBody {
     }
 
     $retLocal = if ($Lambda.ReturnType -ne [void]) {
-        $il.DeclareLocal($Lambda.ReturnType)
+        $il.DeclareLocal((Get-IlType $Lambda.ReturnType))
     } else {
         $null
     }

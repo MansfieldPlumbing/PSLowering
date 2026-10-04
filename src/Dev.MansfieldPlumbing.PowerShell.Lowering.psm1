@@ -3,6 +3,7 @@ $ErrorActionPreference = 'Stop'
 
 . (Join-Path $PSScriptRoot 'Ast/AstTypeResolver.ps1')
 . (Join-Path $PSScriptRoot 'Ast/AstValidator.ps1')
+. (Join-Path $PSScriptRoot 'Ast/ClassModel.ps1')
 . (Join-Path $PSScriptRoot 'Ast/AstLoweringVisitor.ps1')
 . (Join-Path $PSScriptRoot 'Packaging/DeterministicMvid.ps1')
 . (Join-Path $PSScriptRoot 'Packaging/AssemblyBuilder.ps1')
@@ -45,12 +46,21 @@ function ConvertTo-TypedExpression {
 function Export-LoweredAssembly {
     <#
     .SYNOPSIS
-        Lowers typed PowerShell source and emits a reloadable managed assembly.
+        Compiles the classes of a typed PowerShell source file into a managed assembly.
+    .DESCRIPTION
+        Every class in the file is compiled into one assembly, so classes may
+        use each other's types, fields, constructors and methods. Properties
+        become public fields; their initial values run in the static
+        initializer (static properties) or before each constructor body.
+        -ClassName names the class whose methods are reported and which holds
+        the -EntryPoint; it defaults to the first class.
     #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string] $SourcePath,
         [Parameter()][string] $ClassName,
+        # Emit only these methods of -ClassName. A body that uses an omitted
+        # method fails with an error naming it.
         [Parameter()][string[]] $MethodNames,
         [Parameter(Mandatory)][string] $OutputPath,
         [switch] $Deterministic = $true,
@@ -68,94 +78,118 @@ function Export-LoweredAssembly {
     else {
         [IO.Path]::GetFullPath((Join-Path (Get-Location) $SourcePath))
     }
-
     if (-not [IO.File]::Exists($fullSourcePath)) {
         throw "Source file not found: '$fullSourcePath'."
     }
 
     $source = [IO.File]::ReadAllText($fullSourcePath)
     $parsed = Read-PowerShellClass -Source $source -ClassName $ClassName
-    $classAst = $parsed.ClassAst
+    $targetClass = $parsed.ClassAst
+    $classAsts = @($parsed.Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.TypeDefinitionAst] -and $n.IsClass }, $true))
+    $model = @(Get-ClassModel -ClassAsts $classAsts)
+    Use-ClassMirror -Ast $parsed.Ast
+    $mirror = @{} + $script:LoweringClassTypes
 
     $assemblyName = [IO.Path]::GetFileNameWithoutExtension($OutputPath)
     $session = New-PersistedAssemblySession -AssemblyName $assemblyName
-
-    $typeAttrs = [Reflection.TypeAttributes]'Public,Class'
-    $tb = $session.Module.DefineType($classAst.Name, $typeAttrs)
-    $session.Types[$classAst.Name] = $tb
-
-    # Define public parameterless constructor
-    $null = $tb.DefineDefaultConstructor([Reflection.MethodAttributes]'Public')
-
-    $methods = @($classAst.Members | Where-Object {
-        $_ -is [System.Management.Automation.Language.FunctionMemberAst] -and -not $_.IsConstructor
-    })
-
-    if ($MethodNames -and $MethodNames.Count -gt 0) {
-        $methods = @($methods | Where-Object { $_.Name -in $MethodNames })
-    }
-
-    if ($methods.Count -eq 0) {
-        throw "No matching methods found in class '$($classAst.Name)' to export."
-    }
-
-    $emittedMethods = [System.Collections.Generic.List[string]]::new()
-    $entryBuilder = $null
-
-    foreach ($m in $methods) {
-        $lowered = Convert-MethodAstToLambda -MethodAst $m
-
-        $mAttrs = [Reflection.MethodAttributes]'Public,HideBySig'
-        if ($lowered.IsStatic) {
-            $mAttrs = $mAttrs -bor [Reflection.MethodAttributes]::Static
-        }
-        else {
-            $mAttrs = $mAttrs -bor [Reflection.MethodAttributes]::Virtual
+    $declared = [Reflection.BindingFlags]'Public,Static,Instance,DeclaredOnly'
+    $script:IlMap = @{ Types = @{}; Members = @{} }
+    try {
+        # 1. Output types, so every signature can name any of them.
+        foreach ($c in $model) {
+            $tb = $session.Module.DefineType($c.Name, [Reflection.TypeAttributes]'Public,Class')
+            $session.Types[$c.Name] = $tb
+            $script:IlMap.Types[$mirror[$c.Name]] = $tb
         }
 
-        $mb = $tb.DefineMethod(
-            $lowered.Name,
-            $mAttrs,
-            $lowered.ReturnType,
-            $lowered.ParameterTypes
-        )
-
-        for ($i = 0; $i -lt $lowered.ParameterNames.Count; $i++) {
-            $null = $mb.DefineParameter(
-                ($i + 1),
-                [Reflection.ParameterAttributes]::None,
-                $lowered.ParameterNames[$i]
-            )
-        }
-
-        Write-IlMethodBody -Lambda $lowered.Lambda -MethodBuilder $mb -IsStatic:$lowered.IsStatic
-        $emittedMethods.Add($lowered.Name)
-
-        if ($EntryPoint -and $lowered.Name -ceq $EntryPoint) {
-            # ECMA-335 II.15.4.1.2: a static method returning int32 or void,
-            # taking no parameters or one string[].
-            $types = @($lowered.ParameterTypes)
-            $validReturn = $lowered.ReturnType -in [int], [void]
-            $validParams = $types.Count -eq 0 -or ($types.Count -eq 1 -and $types[0] -eq [string[]])
-            if (-not $lowered.IsStatic -or -not $validReturn -or -not $validParams) {
-                throw "[{0}:{1}] Entry point '{2}' must be static, return [int] or [void], and take no parameters or one [string[]]." -f `
-                    $m.Extent.StartLineNumber, $m.Extent.StartColumnNumber, $EntryPoint
+        # 2. Fields, constructors and methods, in source order.
+        $plans = foreach ($c in $model) {
+            $tb = $session.Types[$c.Name]
+            $mirrorType = $mirror[$c.Name]
+            foreach ($p in $c.Properties) {
+                $mf = $mirrorType.GetField($p.Name, $declared)
+                $script:IlMap.Members[$mf] = $tb.DefineField($mf.Name, (Get-IlType $mf.FieldType), $mf.Attributes)
             }
-            $entryBuilder = $mb
+            $constructors = if ($c.Constructors.Count) { $c.Constructors } else { @($null) }
+            $ctorPlans = foreach ($ctorAst in $constructors) {
+                $types = if ($ctorAst) { Get-ParameterTypes $ctorAst } else { [Type[]]@() }
+                $mc = $mirrorType.GetConstructor($declared, $null, $types, $null)
+                $cb = $tb.DefineConstructor($mc.Attributes, [Reflection.CallingConventions]::Standard, [Type[]]@($types | ForEach-Object { Get-IlType $_ }))
+                if ($ctorAst) {
+                    for ($i = 0; $i -lt $ctorAst.Parameters.Count; $i++) { $null = $cb.DefineParameter($i + 1, [Reflection.ParameterAttributes]::None, $ctorAst.Parameters[$i].Name.VariablePath.UserPath) }
+                }
+                $script:IlMap.Members[$mc] = $cb
+                [pscustomobject]@{ Ast = $ctorAst; Builder = $cb }
+            }
+            $methods = @($c.Methods)
+            if ($MethodNames -and $c.Name -eq $targetClass.Name) { $methods = @($methods | Where-Object { $_.Name -in $MethodNames }) }
+            $methodPlans = foreach ($m in $methods) {
+                $types = Get-ParameterTypes $m
+                $mm = $mirrorType.GetMethod($m.Name, $declared, $null, $types, $null)
+                $mb = $tb.DefineMethod($mm.Name, $mm.Attributes, (Get-IlType $mm.ReturnType), [Type[]]@($types | ForEach-Object { Get-IlType $_ }))
+                for ($i = 0; $i -lt $m.Parameters.Count; $i++) { $null = $mb.DefineParameter($i + 1, [Reflection.ParameterAttributes]::None, $m.Parameters[$i].Name.VariablePath.UserPath) }
+                $script:IlMap.Members[$mm] = $mb
+                [pscustomobject]@{ Ast = $m; Builder = $mb }
+            }
+            [pscustomobject]@{ Class = $c; Constructors = @($ctorPlans); Methods = @($methodPlans) }
         }
-    }
 
-    if ($EntryPoint -and -not $entryBuilder) {
-        throw "Entry point '$EntryPoint' is not an exported method of class '$($classAst.Name)'."
-    }
+        # 3. Bodies.
+        $emittedMethods = [System.Collections.Generic.List[string]]::new()
+        $entryBuilder = $null
+        foreach ($plan in $plans) {
+            $c = $plan.Class
+            $staticInits = @($c.Properties | Where-Object { $_.IsStatic -and $_.InitialValue })
+            $instanceInits = @($c.Properties | Where-Object { -not $_.IsStatic -and $_.InitialValue })
+            if ($staticInits.Count) {
+                $lowered = Convert-InitializersToLambda -ClassAst $c.Ast -Initializers $staticInits -Static
+                Write-IlMethodBody -Lambda $lowered.Lambda -MethodBuilder $session.Types[$c.Name].DefineTypeInitializer() -IsStatic
+            }
+            foreach ($ctor in $plan.Constructors) {
+                $lowered = if ($ctor.Ast) { Convert-MethodAstToLambda -MethodAst $ctor.Ast -Initializers $instanceInits }
+                           else { Convert-InitializersToLambda -ClassAst $c.Ast -Initializers $instanceInits }
+                Write-IlMethodBody -Lambda $lowered.Lambda -MethodBuilder $ctor.Builder -HasThis -BaseConstructor
+            }
+            foreach ($method in $plan.Methods) {
+                $lowered = Convert-MethodAstToLambda -MethodAst $method.Ast
+                Write-IlMethodBody -Lambda $lowered.Lambda -MethodBuilder $method.Builder -IsStatic:$lowered.IsStatic -HasThis:$lowered.HasThis
+                if ($c.Name -eq $targetClass.Name) {
+                    $emittedMethods.Add($lowered.Name)
+                    if ($EntryPoint -and $lowered.Name -ceq $EntryPoint) {
+                        # ECMA-335 II.15.4.1.2: a static method returning int32 or void,
+                        # taking no parameters or one string[].
+                        $types = @($lowered.ParameterTypes)
+                        $validReturn = $lowered.ReturnType -in [int], [void]
+                        $validParams = $types.Count -eq 0 -or ($types.Count -eq 1 -and $types[0] -eq [string[]])
+                        if (-not $lowered.IsStatic -or -not $validReturn -or -not $validParams) {
+                            throw "[{0}:{1}] Entry point '{2}' must be static, return [int] or [void], and take no parameters or one [string[]]." -f `
+                                $method.Ast.Extent.StartLineNumber, $method.Ast.Extent.StartColumnNumber, $EntryPoint
+                        }
+                        $entryBuilder = $method.Builder
+                    }
+                }
+            }
+        }
+        if ($emittedMethods.Count -eq 0 -and $MethodNames) {
+            throw "No matching methods found in class '$($targetClass.Name)' to export."
+        }
+        if ($EntryPoint -and -not $entryBuilder) {
+            throw "Entry point '$EntryPoint' is not an exported method of class '$($targetClass.Name)'."
+        }
 
-    $saveResult = Save-PersistedAssemblySession -Session $session -OutputPath $OutputPath -Deterministic:$Deterministic -EntryPoint $entryBuilder
+        # 4. Save.
+        $saveResult = Save-PersistedAssemblySession -Session $session -OutputPath $OutputPath -Deterministic:$Deterministic -EntryPoint $entryBuilder
+    }
+    finally {
+        $script:IlMap = @{ Types = @{}; Members = @{} }
+    }
 
     [pscustomobject]@{
         OutputPath     = $saveResult.OutputPath
         Length         = $saveResult.Length
         SHA256         = $saveResult.SHA256
-        ClassName      = $classAst.Name
+        ClassName      = $targetClass.Name
+        Classes        = [string[]]@($model | ForEach-Object Name)
         EmittedMethods = $emittedMethods.ToArray()
         Deterministic  = $saveResult.Deterministic
         EntryPoint     = $saveResult.EntryPoint

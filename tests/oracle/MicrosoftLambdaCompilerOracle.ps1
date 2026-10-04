@@ -63,7 +63,8 @@ function Test-OracleMethodParity {
         $msResult = $null
         $msError = $null
         try {
-            $msResult = $msDelegate.DynamicInvoke($inputs)
+            $msArguments = if ($lowered.HasThis) { [object[]](@($null) + $inputs) } else { $inputs }
+            $msResult = $msDelegate.DynamicInvoke($msArguments)
         }
         catch {
             $msError = if ($_.Exception.InnerException) { $_.Exception.InnerException.GetType().FullName } else { $_.Exception.GetType().FullName }

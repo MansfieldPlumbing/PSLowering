@@ -3,6 +3,7 @@ $ErrorActionPreference = 'Stop'
 
 . (Join-Path $PSScriptRoot 'AstTypeResolver.ps1')
 . (Join-Path $PSScriptRoot 'AstValidator.ps1')
+. (Join-Path $PSScriptRoot 'ClassModel.ps1')
 
 $script:ExpressionNewMethod = [Linq.Expressions.Expression].GetMethod(
     'New',
@@ -98,6 +99,101 @@ function New-PowerShellArithmetic {
                 [Linq.Expressions.Expression]::Equal($Right, $zero), $throw, $quotient)
         }
     }
+}
+
+function Get-AstArrayElements($node) {
+    if ($node -is [System.Management.Automation.Language.ArrayLiteralAst]) {
+        return @($node.Elements)
+    }
+    if ($node -is [System.Management.Automation.Language.ArrayExpressionAst]) {
+        if ($node.SubExpression -and $node.SubExpression.Statements.Count -gt 0) {
+            $first = $node.SubExpression.Statements[0]
+            if ($first -is [System.Management.Automation.Language.PipelineAst] -and
+                $first.PipelineElements[0] -is [System.Management.Automation.Language.CommandExpressionAst] -and
+                $first.PipelineElements[0].Expression -is [System.Management.Automation.Language.ArrayLiteralAst]) {
+                return @($first.PipelineElements[0].Expression.Elements)
+            }
+            if ($first -is [System.Management.Automation.Language.PipelineAst] -and
+                $first.PipelineElements[0] -is [System.Management.Automation.Language.CommandExpressionAst]) {
+                return @($first.PipelineElements[0].Expression)
+            }
+        }
+    }
+    return @($node)
+}
+
+function New-PowerShellArrayIndex {
+    <#
+    .SYNOPSIS
+        Array element access with PowerShell's index rule: a negative index
+        counts from the end ($a[-1] is the last element). Returns the setup
+        expressions and the element access; the array and index are evaluated
+        once.
+    #>
+    param(
+        [Parameter(Mandatory)][Linq.Expressions.Expression] $Array,
+        [Parameter(Mandatory)][Linq.Expressions.Expression] $Index,
+        [Parameter(Mandatory)][hashtable] $Scope
+    )
+    $setup = [System.Collections.Generic.List[Linq.Expressions.Expression]]::new()
+    if ($Index.Type -ne [int]) { $Index = ConvertTo-PowerShellType -Expression $Index -Type ([int]) }
+    if ($Index -is [Linq.Expressions.ConstantExpression] -and [int]$Index.Value -ge 0) {
+        return [pscustomobject]@{ Setup = $setup; Access = [Linq.Expressions.Expression]::ArrayAccess($Array, $Index) }
+    }
+    $id = $Scope.DeclaredLocals.Count
+    if ($Array -isnot [Linq.Expressions.ParameterExpression]) {
+        $arrayTemp = [Linq.Expressions.Expression]::Variable($Array.Type, "indexArray$id")
+        $Scope.DeclaredLocals.Add($arrayTemp)
+        $setup.Add([Linq.Expressions.Expression]::Assign($arrayTemp, $Array))
+        $Array = $arrayTemp
+    }
+    if ($Index -isnot [Linq.Expressions.ParameterExpression]) {
+        $indexTemp = [Linq.Expressions.Expression]::Variable([int], "indexValue$id")
+        $Scope.DeclaredLocals.Add($indexTemp)
+        $setup.Add([Linq.Expressions.Expression]::Assign($indexTemp, $Index))
+        $Index = $indexTemp
+    }
+    $adjusted = [Linq.Expressions.Expression]::Condition(
+        [Linq.Expressions.Expression]::LessThan($Index, [Linq.Expressions.Expression]::Constant(0)),
+        [Linq.Expressions.Expression]::Add($Index, [Linq.Expressions.Expression]::ArrayLength($Array)),
+        $Index)
+    [pscustomobject]@{ Setup = $setup; Access = [Linq.Expressions.Expression]::ArrayAccess($Array, $adjusted) }
+}
+
+function Convert-AstExpressionAs {
+    param(
+        [Parameter(Mandatory)][System.Management.Automation.Language.Ast] $Node,
+        [Parameter(Mandatory)][Type] $Type,
+        [Parameter(Mandatory)][hashtable] $Scope
+    )
+    $inner = $Node
+    while ($inner -is [System.Management.Automation.Language.PipelineAst] -and $inner.PipelineElements.Count -eq 1 -and
+           $inner.PipelineElements[0] -is [System.Management.Automation.Language.CommandExpressionAst]) {
+        $inner = $inner.PipelineElements[0].Expression
+    }
+    if ($Type.IsArray -and ($inner -is [System.Management.Automation.Language.ArrayExpressionAst] -or
+                            $inner -is [System.Management.Automation.Language.ArrayLiteralAst])) {
+        $elementType = $Type.GetElementType()
+        $items = [System.Collections.Generic.List[Linq.Expressions.Expression]]::new()
+        foreach ($element in Get-AstArrayElements $inner) {
+            $items.Add((Convert-AstExpressionAs -Node $element -Type $elementType -Scope $Scope))
+        }
+        return [Linq.Expressions.Expression]::NewArrayInit($elementType, [Linq.Expressions.Expression[]]$items.ToArray())
+    }
+    $value = Convert-AstExpression -Node $Node -Scope $Scope
+    if ($value.Type -eq $Type) { return $value }
+    if ($value -is [Linq.Expressions.ConstantExpression] -and $null -eq $value.Value -and -not $Type.IsValueType) {
+        return [Linq.Expressions.Expression]::Constant($null, $Type)
+    }
+    ConvertTo-PowerShellType -Expression $value -Type $Type
+}
+
+function New-MemberAccess {
+    # $target.Name or [Type]::Name as a field or property expression.
+    param([Linq.Expressions.Expression] $Target, [Type] $Type, [string] $Name, [System.Management.Automation.Language.Ast] $Node)
+    $member = Resolve-MatchingMember -TargetType $Type -MemberName $Name -IsStatic:($null -eq $Target)
+    if ($member -is [Reflection.PropertyInfo]) { return [Linq.Expressions.Expression]::Property($Target, $member) }
+    [Linq.Expressions.Expression]::Field($Target, $member)
 }
 
 function Read-PowerShellClass {
@@ -275,6 +371,12 @@ function Convert-AstExpression {
             'null'  { return [Linq.Expressions.Expression]::Constant($null, [object]) }
         }
 
+        if ($varName -eq 'this') {
+            if (-not $Scope.This) {
+                throw "[{0}:{1}] `$this is not available in a static method." -f $Node.Extent.StartLineNumber, $Node.Extent.StartColumnNumber
+            }
+            return $Scope.This
+        }
         if ($Scope.Parameters.ContainsKey($varName)) {
             return $Scope.Parameters[$varName]
         }
@@ -303,26 +405,7 @@ function Convert-AstExpression {
         return Convert-AstExpression -Node $Node.Pipeline -Scope $Scope
     }
 
-function Get-AstArrayElements($node) {
-    if ($node -is [System.Management.Automation.Language.ArrayLiteralAst]) {
-        return @($node.Elements)
-    }
-    if ($node -is [System.Management.Automation.Language.ArrayExpressionAst]) {
-        if ($node.SubExpression -and $node.SubExpression.Statements.Count -gt 0) {
-            $first = $node.SubExpression.Statements[0]
-            if ($first -is [System.Management.Automation.Language.PipelineAst] -and
-                $first.PipelineElements[0] -is [System.Management.Automation.Language.CommandExpressionAst] -and
-                $first.PipelineElements[0].Expression -is [System.Management.Automation.Language.ArrayLiteralAst]) {
-                return @($first.PipelineElements[0].Expression.Elements)
-            }
-            if ($first -is [System.Management.Automation.Language.PipelineAst] -and
-                $first.PipelineElements[0] -is [System.Management.Automation.Language.CommandExpressionAst]) {
-                return @($first.PipelineElements[0].Expression)
-            }
-        }
-    }
-    return @($node)
-}
+
 
     # 6. Type casts: [int]$x or [int[]]@(...)
     if ($Node -is [System.Management.Automation.Language.ConvertExpressionAst]) {
@@ -368,6 +451,12 @@ function Get-AstArrayElements($node) {
             }
             'Plus'    { return $operand }
             'Not'     { return [Linq.Expressions.Expression]::Not($operand) }
+            'Bnot'    {
+                if ($operand.Type -notin $script:IntegralTypes) {
+                    throw "[{0}:{1}] -bnot requires an integral operand, got '{2}'." -f $Node.Extent.StartLineNumber, $Node.Extent.StartColumnNumber, $operand.Type.FullName
+                }
+                return [Linq.Expressions.Expression]::Not($operand)
+            }
             'Exclaim' { return [Linq.Expressions.Expression]::Not($operand) }
             default {
                 throw "[{0}:{1}] Unsupported unary operator '{2}'." -f `
@@ -380,6 +469,15 @@ function Get-AstArrayElements($node) {
     if ($Node -is [System.Management.Automation.Language.BinaryExpressionAst]) {
         $left = Convert-AstExpression -Node $Node.Left -Scope $Scope
         $right = Convert-AstExpression -Node $Node.Right -Scope $Scope
+
+        if ($Node.Operator -in 'Shl', 'Shr') {
+            if ($left.Type -notin $script:IntegralTypes -or $right.Type -ne [int]) {
+                throw "[{0}:{1}] -{2} requires an integral left operand and an [int] shift count, got '{3}' and '{4}'." -f `
+                    $Node.Extent.StartLineNumber, $Node.Extent.StartColumnNumber, $Node.Operator.ToString().ToLowerInvariant(), $left.Type.FullName, $right.Type.FullName
+            }
+            if ($Node.Operator -eq 'Shl') { return [Linq.Expressions.Expression]::LeftShift($left, $right) }
+            return [Linq.Expressions.Expression]::RightShift($left, $right)
+        }
 
         if ($left.Type -ne $right.Type) {
             throw "[{0}:{1}] Binary operator '{2}' requires identical operand types, got '{3}' and '{4}'." -f `
@@ -401,6 +499,16 @@ function Get-AstArrayElements($node) {
 
         switch ($Node.Operator) {
             { $_ -in 'Plus', 'Minus', 'Multiply', 'Divide', 'Rem' } { return New-PowerShellArithmetic -Operator $Node.Operator -Left $left -Right $right }
+            { $_ -in 'Band', 'Bor', 'Bxor' } {
+                if ($left.Type -notin $script:IntegralTypes) {
+                    throw "[{0}:{1}] -{2} requires integral operands, got '{3}'." -f $Node.Extent.StartLineNumber, $Node.Extent.StartColumnNumber, $Node.Operator.ToString().ToLowerInvariant(), $left.Type.FullName
+                }
+                switch ($Node.Operator) {
+                    'Band' { return [Linq.Expressions.Expression]::And($left, $right) }
+                    'Bor'  { return [Linq.Expressions.Expression]::Or($left, $right) }
+                    'Bxor' { return [Linq.Expressions.Expression]::ExclusiveOr($left, $right) }
+                }
+            }
             { $_ -in 'Ieq', 'Ceq' } { return [Linq.Expressions.Expression]::Equal($left, $right) }
             { $_ -in 'Ine', 'Cne' } { return [Linq.Expressions.Expression]::NotEqual($left, $right) }
             { $_ -in 'Ilt', 'Clt' } { return [Linq.Expressions.Expression]::LessThan($left, $right) }
@@ -420,11 +528,12 @@ function Get-AstArrayElements($node) {
     if ($Node -is [System.Management.Automation.Language.IndexExpressionAst]) {
         $targetExpr = Convert-AstExpression -Node $Node.Target -Scope $Scope
         $idxExpr = Convert-AstExpression -Node $Node.Index -Scope $Scope
-        if ($targetExpr.Type.IsArray) {
-            if ($idxExpr.Type -ne [int]) {
-                $idxExpr = (ConvertTo-PowerShellType -Expression $idxExpr -Type ([int]))
-            }
-            return [Linq.Expressions.Expression]::ArrayIndex($targetExpr, $idxExpr)
+        if ($targetExpr.Type.IsArray -and $targetExpr.Type.GetArrayRank() -eq 1) {
+            $element = New-PowerShellArrayIndex -Array $targetExpr -Index $idxExpr -Scope $Scope
+            $read = [Linq.Expressions.Expression]::ArrayIndex($element.Access.Object, $element.Access.Arguments[0])
+            if ($element.Setup.Count -eq 0) { return $read }
+            $element.Setup.Add($read)
+            return [Linq.Expressions.Expression]::Block($read.Type, [Linq.Expressions.Expression[]]$element.Setup.ToArray())
         }
         throw "[{0}:{1}] Indexing into non-array type '{2}' is not supported." -f `
             $Node.Extent.StartLineNumber, $Node.Extent.StartColumnNumber, $targetExpr.Type.FullName
@@ -518,26 +627,14 @@ function Get-AstArrayElements($node) {
             } else {
                 Resolve-AstType $Node.Expression.Extent.Text
             }
-            $member = Resolve-MatchingMember -TargetType $targetType -MemberName $memberName -IsStatic
-            if ($member -is [Reflection.PropertyInfo]) {
-                return [Linq.Expressions.Expression]::Property($null, $member)
-            }
-            if ($member -is [Reflection.FieldInfo]) {
-                return [Linq.Expressions.Expression]::Field($null, $member)
-            }
+            return New-MemberAccess -Target $null -Type $targetType -Name $memberName -Node $Node
         }
         else {
             $targetExpr = Convert-AstExpression -Node $Node.Expression -Scope $Scope
             if ($targetExpr.Type.IsArray -and $memberName -eq 'Length') {
                 return [Linq.Expressions.Expression]::ArrayLength($targetExpr)
             }
-            $member = Resolve-MatchingMember -TargetType $targetExpr.Type -MemberName $memberName
-            if ($member -is [Reflection.PropertyInfo]) {
-                return [Linq.Expressions.Expression]::Property($targetExpr, $member)
-            }
-            if ($member -is [Reflection.FieldInfo]) {
-                return [Linq.Expressions.Expression]::Field($targetExpr, $member)
-            }
+            return New-MemberAccess -Target $targetExpr -Type $targetExpr.Type -Name $memberName -Node $Node
         }
     }
 
@@ -567,8 +664,29 @@ function Convert-AstStatement {
             if (-not $compound) {
                 throw "[{0}:{1}] Unsupported assignment operator '{2}'." -f $Statement.Extent.StartLineNumber, $Statement.Extent.StartColumnNumber, $Statement.Operator
             }
-            if ($leftNode -isnot [System.Management.Automation.Language.VariableExpressionAst]) {
-                throw "[{0}:{1}] Compound assignment '{2}' is supported only on a variable." -f $Statement.Extent.StartLineNumber, $Statement.Extent.StartColumnNumber, $Statement.Operator
+            if ($leftNode -is [System.Management.Automation.Language.IndexExpressionAst]) {
+                # The array and index are evaluated once, then the element is read,
+                # combined and stored back.
+                $arrayExpr = Convert-AstExpression -Node $leftNode.Target -Scope $Scope
+                if (-not $arrayExpr.Type.IsArray -or $arrayExpr.Type.GetArrayRank() -ne 1) {
+                    throw "[{0}:{1}] Compound assignment into non-array type '{2}' is not supported." -f $Statement.Extent.StartLineNumber, $Statement.Extent.StartColumnNumber, $arrayExpr.Type.FullName
+                }
+                $element = New-PowerShellArrayIndex -Array $arrayExpr -Index (Convert-AstExpression -Node $leftNode.Index -Scope $Scope) -Scope $Scope
+                $right = Convert-AstExpression -Node $Statement.Right -Scope $Scope
+                if ($right.Type -ne $element.Access.Type) {
+                    throw "[{0}:{1}] Compound assignment '{2}' requires identical operand types, got '{3}' and '{4}'." -f `
+                        $Statement.Extent.StartLineNumber, $Statement.Extent.StartColumnNumber, $Statement.Operator, $element.Access.Type.FullName, $right.Type.FullName
+                }
+                $combined = New-PowerShellArithmetic -Operator $compound -Left $element.Access -Right $right
+                $element.Setup.Add([Linq.Expressions.Expression]::Assign($element.Access, (ConvertTo-PowerShellType -Expression $combined -Type $element.Access.Type)))
+                $element.Setup.Add([Linq.Expressions.Expression]::Empty())
+                return [Linq.Expressions.Expression]::Block([Linq.Expressions.Expression[]]$element.Setup.ToArray())
+            }
+            if ($leftNode -isnot [System.Management.Automation.Language.VariableExpressionAst] -and
+                -not ($leftNode -is [System.Management.Automation.Language.MemberExpressionAst] -and
+                      $leftNode -isnot [System.Management.Automation.Language.InvokeMemberExpressionAst] -and
+                      ($leftNode.Static -or $leftNode.Expression -is [System.Management.Automation.Language.VariableExpressionAst]))) {
+                throw "[{0}:{1}] Compound assignment '{2}' is supported only on a variable or a member of a variable or type." -f $Statement.Extent.StartLineNumber, $Statement.Extent.StartColumnNumber, $Statement.Operator
             }
             $target = Convert-AstExpression -Node $leftNode -Scope $Scope
             $right = Convert-AstExpression -Node $Statement.Right -Scope $Scope
@@ -588,16 +706,27 @@ function Convert-AstStatement {
                 throw "[{0}:{1}] Cannot assign into non-array type '{2}'." -f `
                     $Statement.Extent.StartLineNumber, $Statement.Extent.StartColumnNumber, $targetExpr.Type.FullName
             }
-            if ($idxExpr.Type -ne [int]) {
-                $idxExpr = (ConvertTo-PowerShellType -Expression $idxExpr -Type ([int]))
-            }
             $elemType = $targetExpr.Type.GetElementType()
-            $valExpr = Convert-AstExpression -Node $Statement.Right -Scope $Scope
-            if ($valExpr.Type -ne $elemType) {
-                $valExpr = (ConvertTo-PowerShellType -Expression $valExpr -Type ($elemType))
+            $element = New-PowerShellArrayIndex -Array $targetExpr -Index $idxExpr -Scope $Scope
+            $valExpr = Convert-AstExpressionAs -Node $Statement.Right -Type $elemType -Scope $Scope
+            $store = [Linq.Expressions.Expression]::Assign($element.Access, $valExpr)
+            if ($element.Setup.Count -eq 0) { return $store }
+            $element.Setup.Add($store)
+            $element.Setup.Add([Linq.Expressions.Expression]::Empty())
+            return [Linq.Expressions.Expression]::Block([Linq.Expressions.Expression[]]$element.Setup.ToArray())
+        }
+
+        if ($leftNode -is [System.Management.Automation.Language.MemberExpressionAst] -and
+            $leftNode -isnot [System.Management.Automation.Language.InvokeMemberExpressionAst]) {
+            $memberTarget = Convert-AstExpression -Node $leftNode -Scope $Scope
+            if ($memberTarget -isnot [Linq.Expressions.MemberExpression]) {
+                throw "[{0}:{1}] Cannot assign to '{2}'." -f $Statement.Extent.StartLineNumber, $Statement.Extent.StartColumnNumber, $leftNode.Extent.Text
             }
-            $arrayAccess = [Linq.Expressions.Expression]::ArrayAccess($targetExpr, $idxExpr)
-            return [Linq.Expressions.Expression]::Assign($arrayAccess, $valExpr)
+            if ($memberTarget.Member -is [Reflection.PropertyInfo] -and -not $memberTarget.Member.CanWrite) {
+                throw "[{0}:{1}] Property '{2}' is read-only." -f $Statement.Extent.StartLineNumber, $Statement.Extent.StartColumnNumber, $memberTarget.Member.Name
+            }
+            $valueForMember = Convert-AstExpressionAs -Node $Statement.Right -Type $memberTarget.Type -Scope $Scope
+            return [Linq.Expressions.Expression]::Assign($memberTarget, $valueForMember)
         }
 
         $varName = $null
@@ -616,7 +745,12 @@ function Convert-AstStatement {
                 $Statement.Extent.StartLineNumber, $Statement.Extent.StartColumnNumber, $leftNode.Extent.Text
         }
 
-        $valExpr = Convert-AstExpression -Node $Statement.Right -Scope $Scope
+        $knownType = if ($explicitType) { $explicitType }
+                     elseif ($Scope.Parameters.ContainsKey($varName)) { $Scope.Parameters[$varName].Type }
+                     elseif ($Scope.Locals.ContainsKey($varName)) { $Scope.Locals[$varName].Type }
+                     else { $null }
+        $valExpr = if ($knownType) { Convert-AstExpressionAs -Node $Statement.Right -Type $knownType -Scope $Scope }
+                   else { Convert-AstExpression -Node $Statement.Right -Scope $Scope }
 
         if ($explicitType -and $valExpr.Type -ne $explicitType) {
             $valExpr = (ConvertTo-PowerShellType -Expression $valExpr -Type ($explicitType))
@@ -654,10 +788,7 @@ function Convert-AstStatement {
             return [Linq.Expressions.Expression]::Return($Scope.ReturnTarget)
         }
 
-        $retVal = Convert-AstExpression -Node $Statement.Pipeline -Scope $Scope
-        if ($retVal.Type -ne $Scope.ReturnType) {
-            $retVal = (ConvertTo-PowerShellType -Expression $retVal -Type ($Scope.ReturnType))
-        }
+        $retVal = Convert-AstExpressionAs -Node $Statement.Pipeline -Type $Scope.ReturnType -Scope $Scope
 
         return [Linq.Expressions.Expression]::Return($Scope.ReturnTarget, $retVal)
     }
@@ -894,84 +1025,128 @@ function Convert-AstStatement {
 function Convert-MethodAstToLambda {
     <#
     .SYNOPSIS
-        Lowers a FunctionMemberAst into a validated System.Linq.Expressions.LambdaExpression.
+        Lowers a method or constructor of a PowerShell class into a LambdaExpression.
+    .DESCRIPTION
+        Types are resolved against the mirror of every class in the method's
+        source, so the method may use those classes and their members. An
+        instance method or constructor takes the instance as its first lambda
+        parameter, named 'this', which the emitter maps to argument 0. A
+        constructor first runs -Initializers, the instance properties' initial
+        values, as PowerShell does before the constructor body.
     #>
     param(
         [Parameter(Mandatory)]
-        [System.Management.Automation.Language.FunctionMemberAst] $MethodAst
+        [System.Management.Automation.Language.FunctionMemberAst] $MethodAst,
+
+        [Parameter()]
+        [System.Management.Automation.Language.PropertyMemberAst[]] $Initializers = @()
     )
 
+    Use-ClassMirror -Ast $MethodAst
     Test-AstAdmitted -Ast $MethodAst
 
-    $retType = if ($MethodAst.ReturnType) {
-        Resolve-AstType $MethodAst.ReturnType.TypeName
-    }
-    else {
-        [void]
-    }
+    $classType = $script:LoweringClassTypes[$MethodAst.Parent.Name]
+    $retType = if ($MethodAst.IsConstructor) { [void] }
+               elseif ($MethodAst.ReturnType) { Resolve-AstType $MethodAst.ReturnType.TypeName }
+               else { [void] }
 
     $paramExprList = [System.Collections.Generic.List[Linq.Expressions.ParameterExpression]]::new()
     $paramMap = @{}
-
     foreach ($p in $MethodAst.Parameters) {
         $tc = $p.Attributes | Where-Object { $_ -is [System.Management.Automation.Language.TypeConstraintAst] } | Select-Object -First 1
         $pType = if ($tc) { Resolve-AstType $tc.TypeName } else { [object] }
         $pName = $p.Name.VariablePath.UserPath
-
         $pExpr = [Linq.Expressions.Expression]::Parameter($pType, $pName)
         $paramExprList.Add($pExpr)
         $paramMap[$pName] = $pExpr
     }
 
-    $returnTarget = [Linq.Expressions.Expression]::Label($retType, 'returnTarget')
+    $thisParam = if ($MethodAst.IsStatic) { $null } else { [Linq.Expressions.Expression]::Parameter($classType, 'this') }
+    New-LoweredBody -Name $MethodAst.Name -ReturnType $retType -This $thisParam -Parameters $paramExprList -ParameterMap $paramMap `
+        -Initializers $Initializers -Statements @($(if ($MethodAst.Body -and $MethodAst.Body.EndBlock) { $MethodAst.Body.EndBlock.Statements })) `
+        -IsStatic ([bool]$MethodAst.IsStatic) -IsConstructor ([bool]$MethodAst.IsConstructor)
+}
 
+function Convert-InitializersToLambda {
+    <#
+    .SYNOPSIS
+        Lowers property initial values on their own: the static initializer
+        (-Static) or the implicit constructor of a class that declares none.
+    #>
+    param(
+        [Parameter(Mandatory)][System.Management.Automation.Language.TypeDefinitionAst] $ClassAst,
+        [Parameter()][System.Management.Automation.Language.PropertyMemberAst[]] $Initializers = @(),
+        [switch] $Static
+    )
+    Use-ClassMirror -Ast $ClassAst
+    $classType = $script:LoweringClassTypes[$ClassAst.Name]
+    $thisParam = if ($Static) { $null } else { [Linq.Expressions.Expression]::Parameter($classType, 'this') }
+    New-LoweredBody -Name $(if ($Static) { '.cctor' } else { '.ctor' }) -ReturnType ([void]) -This $thisParam `
+        -Parameters ([System.Collections.Generic.List[Linq.Expressions.ParameterExpression]]::new()) -ParameterMap @{} `
+        -Initializers $Initializers -Statements @() -IsStatic ([bool]$Static) -IsConstructor $true
+}
+
+function New-LoweredBody {
+    param(
+        [string] $Name, [Type] $ReturnType, $This,
+        [System.Collections.Generic.List[Linq.Expressions.ParameterExpression]] $Parameters, [hashtable] $ParameterMap,
+        [System.Management.Automation.Language.PropertyMemberAst[]] $Initializers, [object[]] $Statements,
+        [bool] $IsStatic, [bool] $IsConstructor
+    )
+
+    $returnTarget = [Linq.Expressions.Expression]::Label($ReturnType, 'returnTarget')
     $declaredLocals = [System.Collections.Generic.List[Linq.Expressions.ParameterExpression]]::new()
-
     $scope = @{
-        ReturnType     = $retType
+        ReturnType     = $ReturnType
         ReturnTarget   = $returnTarget
-        Parameters     = $paramMap
+        Parameters     = $ParameterMap
         Locals         = @{}
         DeclaredLocals = $declaredLocals
         Loops          = [System.Collections.Generic.Stack[object]]::new()
+        This           = $This
     }
 
-    $statements = [System.Collections.Generic.List[Linq.Expressions.Expression]]::new()
-
-    if ($MethodAst.Body -and $MethodAst.Body.EndBlock -and $MethodAst.Body.EndBlock.Statements) {
-        foreach ($stmt in $MethodAst.Body.EndBlock.Statements) {
-            $expr = Convert-AstStatement -Statement $stmt -Scope $scope
-            $statements.Add($expr)
+    $body = [System.Collections.Generic.List[Linq.Expressions.Expression]]::new()
+    foreach ($p in $Initializers) {
+        if (-not $p.InitialValue) { continue }
+        $classType = $script:LoweringClassTypes[$p.Parent.Name]
+        $field = $classType.GetField($p.Name, [Reflection.BindingFlags]'Public,Static,Instance')
+        $value = Convert-AstExpressionAs -Node $p.InitialValue -Type $field.FieldType -Scope $scope
+        $target = if ($field.IsStatic) { $null } else { $This }
+        $body.Add([Linq.Expressions.Expression]::Assign([Linq.Expressions.Expression]::Field($target, $field), $value))
+    }
+    foreach ($stmt in $Statements) {
+        if ($null -eq $stmt) { continue }
+        # The parser opens every constructor with an implicit base() call; the
+        # emitter calls System.Object's constructor, the only base supported.
+        if ($stmt -is [System.Management.Automation.Language.CommandExpressionAst] -and
+            $stmt.Expression -is [System.Management.Automation.Language.BaseCtorInvokeMemberExpressionAst]) {
+            if ($stmt.Expression.Arguments -and @($stmt.Expression.Arguments).Count) {
+                throw "[{0}:{1}] A base constructor call with arguments is not supported." -f $stmt.Extent.StartLineNumber, $stmt.Extent.StartColumnNumber
+            }
+            continue
         }
+        $body.Add((Convert-AstStatement -Statement $stmt -Scope $scope))
     }
+    $defaultVal = if ($ReturnType -eq [void]) { [Linq.Expressions.Expression]::Empty() } else { [Linq.Expressions.Expression]::Default($ReturnType) }
+    $body.Add([Linq.Expressions.Expression]::Label($returnTarget, $defaultVal))
 
-    # Epilogue: Mark return target
-    $defaultVal = if ($retType -eq [void]) {
-        [Linq.Expressions.Expression]::Empty()
-    }
-    else {
-        [Linq.Expressions.Expression]::Default($retType)
-    }
-    $statements.Add([Linq.Expressions.Expression]::Label($returnTarget, $defaultVal))
-
-    $bodyBlock = [Linq.Expressions.Expression]::Block(
-        $retType,
+    $bodyBlock = [Linq.Expressions.Expression]::Block($ReturnType,
         [Linq.Expressions.ParameterExpression[]]$declaredLocals.ToArray(),
-        [Linq.Expressions.Expression[]]$statements.ToArray()
-    )
-
-    $lambda = [Linq.Expressions.Expression]::Lambda(
-        $bodyBlock,
-        $MethodAst.Name,
-        [Linq.Expressions.ParameterExpression[]]$paramExprList.ToArray()
-    )
+        [Linq.Expressions.Expression[]]$body.ToArray())
+    $lambdaParameters = [System.Collections.Generic.List[Linq.Expressions.ParameterExpression]]::new()
+    if ($This) { $lambdaParameters.Add($This) }
+    foreach ($p in $Parameters) { $lambdaParameters.Add($p) }
+    $lambda = [Linq.Expressions.Expression]::Lambda($bodyBlock, $Name, [Linq.Expressions.ParameterExpression[]]$lambdaParameters.ToArray())
 
     [pscustomobject]@{
-        Name           = $MethodAst.Name
-        IsStatic       = [bool]$MethodAst.IsStatic
-        ReturnType     = $retType
-        ParameterTypes = [Type[]]@($paramExprList | ForEach-Object { $_.Type })
-        ParameterNames = [string[]]@($paramExprList | ForEach-Object { $_.Name })
+        Name           = $Name
+        IsStatic       = $IsStatic
+        IsConstructor  = $IsConstructor
+        HasThis        = [bool]$This
+        ReturnType     = $ReturnType
+        ParameterTypes = [Type[]]@($Parameters | ForEach-Object { $_.Type })
+        ParameterNames = [string[]]@($Parameters | ForEach-Object { $_.Name })
         Lambda         = $lambda
     }
 }
