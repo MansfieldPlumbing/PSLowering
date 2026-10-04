@@ -149,13 +149,11 @@ are written beneath `build/`, which Git ignores.
 
 ## Status and next steps
 
-Version 0.1. Next:
-
-1. Run compiled `FindProfile` inside Pwsh's host on its x86-64, arm64 and
-   arm32 Android targets.
-2. The constructs Pwsh's console core
-   needs.
-3. Compile the compiler with itself, and publish the module.
+Version 0.1. Compiled output matched PowerShell on the device for every
+oracle call of `25427b2` on the x86-64 emulator, an arm64 device and an arm32
+device (Pwsh `scripts/probes/lowering`). The ordered plan, with acceptance
+gates, principles and the list of what is deliberately not supported, is
+[ROADMAP.md](ROADMAP.md).
 
 ## Repository layout
 
