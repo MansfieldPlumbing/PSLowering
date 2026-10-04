@@ -1,35 +1,63 @@
 # PSLowering
 
-PSLowering compiles methods written as typed PowerShell classes into
-managed .NET assemblies, without C#, Roslyn or `Add-Type`. The compiler is
-itself written in PowerShell.
+PSLowering lets PowerShell be the language you write managed code in. You
+write a typed PowerShell class; PSLowering compiles its methods ahead of time
+into a .NET assembly whose methods run as ordinary IL, with no PowerShell
+engine, no C#, no Roslyn and no `Add-Type`. The compiler is itself written in
+PowerShell.
 
-It compiles a declared typed subset of the language, not arbitrary scripts.
-Compiled methods run without PowerShell: the output's only assembly reference
-is `System.Private.CoreLib`.
+The module is `Dev.MansfieldPlumbing.PowerShell.Lowering`.
 
-## How it works
+## Why it exists
 
-1. Parse the class with `System.Management.Automation`'s parser.
-2. Admit or reject each method (`src/Ast/AstValidator.ps1`). Commands,
-   pipelines, script blocks and expandable strings are rejected with their
-   source position.
-3. Lower each method to a `System.Linq.Expressions` tree with PowerShell's
-   meaning (`src/Ast/AstLoweringVisitor.ps1`).
-4. Write the IL with the compiler's own emitter through public
-   `System.Reflection.Emit` APIs (`src/Emitter/IlEmitter.ps1`).
-5. Save the assembly with `PersistedAssemblyBuilder` and a deterministic MVID
-   (`src/Packaging`).
+Projects that keep every line of their implementation in PowerShell still
+need managed code in places where a PowerShell runspace cannot be used: code
+that runs before the engine starts, code that must keep working when it
+fails to load, and hot paths that run per frame or per sample. Until now that
+code had to be written by hand as `System.Linq.Expressions` trees, node by
+node, which is slow to write and hard to review.
+
+PSLowering replaces that with the same method written as typed PowerShell.
+Its first consumers:
+
+- **[Pwsh](https://github.com/MansfieldPlumbing/Pwsh)**, PowerShell on Android: the methods of its emitted managed host,
+  the console core it lowers for performance, and a recovery path that must
+  run without the PowerShell engine. Pwsh's `FindProfile` is here as a
+  fixture: 12 lines of typed PowerShell in place of the expression-tree code
+  that builds it today, admitted by Pwsh's own persisted-method check.
+- **[Kokoro-Hexagon](https://github.com/MansfieldPlumbing/Kokoro-Hexagon)**, a text-to-speech engine:
+  the managed control code around its model, such as the `VoiceRowIndex` contract in the fixtures.
+
+## Example
+
+```powershell
+# Contract.ps1
+class Contract {
+    static [int] VoiceRowIndex([int] $phonemeCount) {
+        if ($phonemeCount -lt 1 -or $phonemeCount -gt 510) {
+            throw [System.ArgumentOutOfRangeException]::new('phonemeCount')
+        }
+        return $phonemeCount - 1
+    }
+}
+```
 
 ```powershell
 Import-Module ./src/Dev.MansfieldPlumbing.PowerShell.Lowering.psd1
 Export-LoweredAssembly -SourcePath ./Contract.ps1 -ClassName Contract -OutputPath ./build/Contract.dll -Deterministic
-Get-LoweringCapability
+
+$type = [Reflection.Assembly]::LoadFile("$PWD/build/Contract.dll").GetType('Contract')
+$type.GetMethod('VoiceRowIndex').Invoke($null, @(42))   # 41
 ```
 
-## Supported subset
+`Get-LoweringCapability` reports the PowerShell and .NET versions in use and
+the semantic contract. `ConvertTo-TypedExpression` returns a method's
+lowered expression tree for inspection, and `Test-LoweredAssembly` checks a
+compiled assembly.
 
-Exercised by the fixtures in `tests/fixtures`:
+## What it compiles
+
+A declared typed subset, exercised by the fixtures in `tests/fixtures`:
 
 - static and instance methods with zero or more typed parameters and typed
   returns, including `[void]`;
@@ -38,19 +66,27 @@ Exercised by the fixtures in `tests/fixtures`:
 - `if`/`elseif`/`else`, `while`, `for` and early `return`;
 - typed arrays: creation, literals, indexing, element assignment and
   `Length`;
-- calls to .NET static and instance methods, properties and constructors,
-  bound by exact signature;
+- calls to .NET static and instance methods, properties, constants and
+  constructors, bound by exact signature;
 - `throw` and `try`/`catch`/`finally`.
 
-`foreach`, `do`, `switch`, `break` and `continue` are rejected with their source
-position.
+Anything else is rejected before an assembly is written, with its line,
+column and reason: commands, pipelines, script blocks, expandable strings,
+`foreach`, `do`, `switch`, `break`, `continue`, and operators on mixed types.
+Nothing falls back to running the original script.
+
+## Guarantees and how they are checked
+
+| Guarantee | Checked by |
+| --- | --- |
+| A compiled method returns what the same PowerShell method returns, or both throw | `tests/oracle/PowerShellSourceOracle.ps1`: every fixture method run as PowerShell and as IL on the same inputs (159 calls) |
+| The emitter writes the IL the framework's own compiler would accept for the same tree | `tests/oracle/MicrosoftLambdaCompilerOracle.ps1`: the same trees compiled by `LambdaCompiler`, results compared |
+| Output references no `System.Management.Automation` type and no dynamic call site; its only assembly reference is `System.Private.CoreLib` | `tests/Test-ZeroSmaHost.ps1` |
+| The same input builds byte-identical assemblies with the same MVID | slices 1, 2, 4 and 5, which build twice and compare SHA-256 and MVID |
+| Output passes Pwsh's persisted-method admission | `tests/consumers/Test-PwshAdmission.ps1`: `Test-ExpressionGraph` from Pwsh's `setup.ps1` at a pinned commit and SHA-256 |
+| The Kokoro `VoiceRowIndex` contract holds | `tests/Test-Slice9.ps1`: all counts 1-510, the out-of-range and Int32 extremes, the exception's parameter name |
 
 ## Semantics
-
-A compiled method returns what the same typed PowerShell method returns.
-`tests/oracle/PowerShellSourceOracle.ps1` checks this by running every
-fixture method as PowerShell and as compiled IL on the same inputs
-(`tests/oracle/OracleVectors.ps1`).
 
 - Integral `+`, `-`, `*`, `++`, `--` and negation throw `OverflowException` on
   overflow. PowerShell widens the intermediate result and then fails
@@ -74,40 +110,31 @@ continues with a `Double`.
 pwsh -NoLogo -NoProfile -File ./tests/Test-ConsolidatedRunner.ps1
 ```
 
-The runner executes 15 suites, each in its own process:
+The runner executes 15 suites, each in its own process. All pass on
+PowerShell 7.6.6 with .NET 10.0.8 (the pinned CI tool) and on PowerShell
+7.7.0-preview.4 with .NET 11.0.0-preview.6.26359.118. Generated assemblies
+are written beneath `build/`, which Git ignores.
 
-- the SMA persistence baselines;
-- slices 1-9: signatures, arithmetic, comparisons, control flow, arrays,
-  .NET calls, exceptions and the Kokoro `VoiceRowIndex` consumer contract;
-- the LambdaCompiler oracle, which compiles the same expression trees with
-  the framework's compiler and compares results;
-- a fresh-process host that loads every compiled assembly without SMA;
-- the PowerShell source oracle;
-- Pwsh's persisted-method admission rule (`Test-ExpressionGraph` from its
-  `setup.ps1` at a pinned commit), applied to every fixture method.
+## Status and next steps
 
-All 15 pass on PowerShell 7.7.0-preview.4 with .NET
-11.0.0-preview.6.26359.118. CI runs the pinned PowerShell 7.6.6 .NET tool.
+Version 0.1. Next:
 
-Generated assemblies are written beneath `build/`, which Git ignores.
+1. Run compiled `FindProfile` inside Pwsh's host on its x86-64, arm64 and
+   arm32 Android targets.
+2. Prove execution in a host without PowerShell: a compiled entry point run
+   by the `dotnet` host alone.
+3. `foreach`, `break` and `continue`, then the constructs Pwsh's console core
+   needs.
+4. Compile the compiler with itself, and publish the module.
 
-## The SMA persistence experiment
+## Repository layout
 
-`experiments/Invoke-OneParameterPersistenceProof.ps1` takes the other route:
-it asks SMA's own compiler for a method's expression tree, rewrites parameter
-access, persists SMA's dynamic call sites and saves the result. Its output
-keeps SMA's semantics and therefore depends on SMA at run time. It is kept as
-the baseline the compiler is compared with, verified by
-`tests/Test-OneParameterPersistence.ps1` and
-`tests/Test-TwoParameterPersistence.ps1`. It relies on private SMA
-implementation details that can change between releases.
-
-## Related repositories
-
-- [QuickPS](https://github.com/MansfieldPlumbing/QuickPS) explores graphics and
-  native Windows bindings from PowerShell.
-- [JS2PS](https://github.com/MansfieldPlumbing/JS2PS) contains JavaScript parsing
-  and conformance research. It does not claim a finished converter.
+- `src/`: the compiler module.
+- `tests/`: fixtures, oracles, consumer tests and the consolidated runner.
+- `experiments/`: the earlier approach, which persists the expression trees
+  SMA's own compiler produces. Its output keeps SMA's semantics and depends
+  on SMA at run time; it is kept as a comparison baseline.
+- `probes/`: read-only runtime observation.
 
 ## License
 
