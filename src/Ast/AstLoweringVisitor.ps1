@@ -75,6 +75,11 @@ function New-PowerShellArithmetic {
         [Parameter(Mandatory)][Linq.Expressions.Expression] $Left,
         [Parameter(Mandatory)][Linq.Expressions.Expression] $Right
     )
+    if ($Left.Type -eq [string]) {
+        if ($Operator -ne 'Plus') { throw "Operator '$Operator' is not defined for strings." }
+        $concat = [string].GetMethod('Concat', [Type[]]@([string], [string]))
+        return [Linq.Expressions.Expression]::Call($concat, $Left, $Right)
+    }
     $integral = $Left.Type -in $script:IntegralTypes
     switch ($Operator) {
         'Plus'     { if ($integral) { return [Linq.Expressions.Expression]::AddChecked($Left, $Right) }; return [Linq.Expressions.Expression]::Add($Left, $Right) }
@@ -557,6 +562,24 @@ function Convert-AstStatement {
     if ($Statement -is [System.Management.Automation.Language.AssignmentStatementAst]) {
         $leftNode = $Statement.Left
 
+        if ($Statement.Operator -ne [System.Management.Automation.Language.TokenKind]::Equals) {
+            $compound = @{ PlusEquals = 'Plus'; MinusEquals = 'Minus'; MultiplyEquals = 'Multiply'; DivideEquals = 'Divide'; RemainderEquals = 'Rem' }[[string]$Statement.Operator]
+            if (-not $compound) {
+                throw "[{0}:{1}] Unsupported assignment operator '{2}'." -f $Statement.Extent.StartLineNumber, $Statement.Extent.StartColumnNumber, $Statement.Operator
+            }
+            if ($leftNode -isnot [System.Management.Automation.Language.VariableExpressionAst]) {
+                throw "[{0}:{1}] Compound assignment '{2}' is supported only on a variable." -f $Statement.Extent.StartLineNumber, $Statement.Extent.StartColumnNumber, $Statement.Operator
+            }
+            $target = Convert-AstExpression -Node $leftNode -Scope $Scope
+            $right = Convert-AstExpression -Node $Statement.Right -Scope $Scope
+            if ($right.Type -ne $target.Type) {
+                throw "[{0}:{1}] Compound assignment '{2}' requires identical operand types, got '{3}' and '{4}'." -f `
+                    $Statement.Extent.StartLineNumber, $Statement.Extent.StartColumnNumber, $Statement.Operator, $target.Type.FullName, $right.Type.FullName
+            }
+            $value = New-PowerShellArithmetic -Operator $compound -Left $target -Right $right
+            return [Linq.Expressions.Expression]::Assign($target, (ConvertTo-PowerShellType -Expression $value -Type $target.Type))
+        }
+
         # Array element assignment: $arr[$i] = <expr>
         if ($leftNode -is [System.Management.Automation.Language.IndexExpressionAst]) {
             $targetExpr = Convert-AstExpression -Node $leftNode.Target -Scope $Scope
@@ -684,7 +707,9 @@ function Convert-AstStatement {
             [Linq.Expressions.Expression]::Constant($true, [bool])
         }
 
-        $bodyExpr = Convert-AstStatement -Statement $Statement.Body -Scope $Scope
+        $Scope.Loops.Push(@{ Break = $breakLabel; Continue = $continueLabel })
+        try { $bodyExpr = Convert-AstStatement -Statement $Statement.Body -Scope $Scope }
+        finally { $null = $Scope.Loops.Pop() }
 
         $iterExpr = if ($Statement.Iterator) {
             Convert-AstStatement -Statement $Statement.Iterator -Scope $Scope
@@ -719,7 +744,9 @@ function Convert-AstStatement {
         $continueLabel = [Linq.Expressions.Expression]::Label('whileContinue')
 
         $condExpr = Convert-AstExpression -Node $Statement.Condition -Scope $Scope
-        $bodyExpr = Convert-AstStatement -Statement $Statement.Body -Scope $Scope
+        $Scope.Loops.Push(@{ Break = $breakLabel; Continue = $continueLabel })
+        try { $bodyExpr = Convert-AstStatement -Statement $Statement.Body -Scope $Scope }
+        finally { $null = $Scope.Loops.Pop() }
 
         $loopBody = [Linq.Expressions.Expression]::Block(
             $bodyExpr,
@@ -789,6 +816,77 @@ function Convert-AstStatement {
         return Convert-AstExpression -Node $Statement -Scope $Scope
     }
 
+    # 10. foreach ($item in $array) { ... } over a typed one-dimensional array,
+    # lowered as an indexed loop. As in PowerShell, a $null array iterates zero
+    # times, and the loop variable keeps its last value afterwards.
+    if ($Statement -is [System.Management.Automation.Language.ForEachStatementAst]) {
+        if ($Statement.Flags -ne [System.Management.Automation.Language.ForEachFlags]::None) {
+            throw "[{0}:{1}] foreach -parallel is not supported." -f $Statement.Extent.StartLineNumber, $Statement.Extent.StartColumnNumber
+        }
+        $collection = Convert-AstExpression -Node $Statement.Condition -Scope $Scope
+        if (-not $collection.Type.IsArray -or $collection.Type.GetArrayRank() -ne 1) {
+            throw "[{0}:{1}] foreach requires a typed one-dimensional array, got '{2}'." -f `
+                $Statement.Extent.StartLineNumber, $Statement.Extent.StartColumnNumber, $collection.Type.FullName
+        }
+        $elementType = $collection.Type.GetElementType()
+        $varName = $Statement.Variable.VariablePath.UserPath
+        $item = if ($Scope.Parameters.ContainsKey($varName)) { $Scope.Parameters[$varName] }
+                elseif ($Scope.Locals.ContainsKey($varName)) { $Scope.Locals[$varName] }
+                else {
+                    $declared = [Linq.Expressions.Expression]::Variable($elementType, $varName)
+                    $Scope.Locals[$varName] = $declared
+                    $Scope.DeclaredLocals.Add($declared)
+                    $declared
+                }
+        $id = $Scope.DeclaredLocals.Count
+        $array = [Linq.Expressions.Expression]::Variable($collection.Type, "foreachArray$id")
+        $index = [Linq.Expressions.Expression]::Variable([int], "foreachIndex$id")
+        $Scope.DeclaredLocals.Add($array)
+        $Scope.DeclaredLocals.Add($index)
+        $breakLabel = [Linq.Expressions.Expression]::Label("foreachBreak$id")
+        $continueLabel = [Linq.Expressions.Expression]::Label("foreachContinue$id")
+
+        $Scope.Loops.Push(@{ Break = $breakLabel; Continue = $continueLabel })
+        try { $bodyExpr = Convert-AstStatement -Statement $Statement.Body -Scope $Scope }
+        finally { $null = $Scope.Loops.Pop() }
+
+        $current = (ConvertTo-PowerShellType -Expression ([Linq.Expressions.Expression]::ArrayIndex($array, $index)) -Type $item.Type)
+        $loopBody = [Linq.Expressions.Expression]::Block(
+            [Linq.Expressions.Expression]::Assign($item, $current),
+            $bodyExpr,
+            [Linq.Expressions.Expression]::Label($continueLabel),
+            [Linq.Expressions.Expression]::Assign($index, [Linq.Expressions.Expression]::Add($index, [Linq.Expressions.Expression]::Constant(1))),
+            [Linq.Expressions.Expression]::Empty())
+        $loop = [Linq.Expressions.Expression]::Loop(
+            [Linq.Expressions.Expression]::IfThenElse(
+                [Linq.Expressions.Expression]::LessThan($index, [Linq.Expressions.Expression]::ArrayLength($array)),
+                $loopBody,
+                [Linq.Expressions.Expression]::Break($breakLabel)),
+            $breakLabel)
+        return [Linq.Expressions.Expression]::Block(
+            [Linq.Expressions.Expression]::Assign($array, $collection),
+            [Linq.Expressions.Expression]::Assign($index, [Linq.Expressions.Expression]::Constant(0)),
+            [Linq.Expressions.Expression]::IfThen(
+                [Linq.Expressions.Expression]::NotEqual($array, [Linq.Expressions.Expression]::Constant($null, $collection.Type)),
+                $loop),
+            [Linq.Expressions.Expression]::Empty())
+    }
+
+    # 11. break and continue leave or restart the innermost loop.
+    if ($Statement -is [System.Management.Automation.Language.BreakStatementAst] -or
+        $Statement -is [System.Management.Automation.Language.ContinueStatementAst]) {
+        $keyword = if ($Statement -is [System.Management.Automation.Language.BreakStatementAst]) { 'break' } else { 'continue' }
+        if ($Statement.Label) {
+            throw "[{0}:{1}] Labeled {2} is not supported." -f $Statement.Extent.StartLineNumber, $Statement.Extent.StartColumnNumber, $keyword
+        }
+        if ($Scope.Loops.Count -eq 0) {
+            throw "[{0}:{1}] {2} outside a loop is not supported." -f $Statement.Extent.StartLineNumber, $Statement.Extent.StartColumnNumber, $keyword
+        }
+        $loopLabels = $Scope.Loops.Peek()
+        if ($keyword -eq 'break') { return [Linq.Expressions.Expression]::Break($loopLabels.Break) }
+        return [Linq.Expressions.Expression]::Continue($loopLabels.Continue)
+    }
+
     throw "[{0}:{1}] Unsupported AST statement '{2}' ({3})." -f `
         $Statement.Extent.StartLineNumber, $Statement.Extent.StartColumnNumber, $Statement.Extent.Text, $Statement.GetType().Name
 }
@@ -835,6 +933,7 @@ function Convert-MethodAstToLambda {
         Parameters     = $paramMap
         Locals         = @{}
         DeclaredLocals = $declaredLocals
+        Loops          = [System.Collections.Generic.Stack[object]]::new()
     }
 
     $statements = [System.Collections.Generic.List[Linq.Expressions.Expression]]::new()

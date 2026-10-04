@@ -86,3 +86,18 @@ V SemanticsFixture.ps1 SemanticsFixture StringLess        @(@('a', 'B'), @('B', 
 # Pwsh consumer: FindProfile from setup.ps1's managed host
 $profileFiles = [string[]]@('/data/files/notes.txt', '/data/files/PROFILE.PS1', '/data/files/Profile.ps1')
 V PwshFindProfileFixture.ps1 PwshNativeHost FindProfile @(@($profileFiles, 0, 'none'), @($profileFiles, 2, 'none'), @([string[]]@('/a/b.ps1'), 0, 'none'), @([string[]]@(), 0, 'none'), @($profileFiles, 3, 'none'), @([string[]]@('Profile.ps1x', 'xProfile.ps1'), 0, 'none'))
+
+# Loops: foreach, break and continue
+V LoopsFixture.ps1 LoopsFixture SumForeach               @(@(, [int[]]@(1, 2, 3)), @(, [int[]]@()), @(, $null), @(, [int[]]@($max, 1)))
+V LoopsFixture.ps1 LoopsFixture LastForeachValue         @(@(, [int[]]@(4, 5, 6)), @(, [int[]]@()), @(, $null))
+V LoopsFixture.ps1 LoopsFixture FirstNegativeIndex       @(@(, [int[]]@(3, -1, -2)), @(, [int[]]@(1, 2)), @(, [int[]]@()))
+V LoopsFixture.ps1 LoopsFixture SumSkippingOdd           @(@(, [int[]]@(1, 2, 3, 4)), @(, [int[]]@(1, 3)), @(, [int[]]@()))
+V LoopsFixture.ps1 LoopsFixture ForContinueStillIterates @(@(0), @(1), @(10))
+V LoopsFixture.ps1 LoopsFixture WhileContinue            @(@(0), @(5), @(10))
+V LoopsFixture.ps1 LoopsFixture NestedBreakInner         @(@(3, 5), @(2, 1), @(0, 4))
+V LoopsFixture.ps1 LoopsFixture BreakFromTry             @(@(, [int[]]@(1, 2, 0, 3)), @(, [int[]]@(0)), @(, [int[]]@(5)))
+V LoopsFixture.ps1 LoopsFixture AverageDoubles           @(@(, [double[]]@(1.0, 2.0, 4.0)), @(, [double[]]@()))
+V LoopsFixture.ps1 LoopsFixture CountChars               @(@(, [string[]]@('ab', 'cde', '')), @(, [string[]]@()))
+V SemanticsFixture.ps1 SemanticsFixture CompoundInt    @(@(1, 2), @(-5, 3), @($max, 1))
+V SemanticsFixture.ps1 SemanticsFixture CompoundDivide @(@(7, 2), @(5, 2), @(1, 0))
+V SemanticsFixture.ps1 SemanticsFixture Concat         @(@('a', 'b'), @('', ''))

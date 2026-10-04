@@ -66,9 +66,12 @@ A declared typed subset, exercised by the fixtures in `tests/fixtures`:
 
 - static and instance methods with zero or more typed parameters and typed
   returns, including `[void]`;
-- constants, typed locals, assignment, increment and decrement;
-- arithmetic, comparison and Boolean operators on operands of the same type;
-- `if`/`elseif`/`else`, `while`, `for` and early `return`;
+- constants, typed locals, assignment, compound assignment (`+=`, `-=`, `*=`,
+  `/=`, `%=`) on variables, increment and decrement;
+- arithmetic, comparison and Boolean operators on operands of the same type,
+  and string concatenation with `+`;
+- `if`/`elseif`/`else`, `while`, `for`, `foreach` over a typed array,
+  `break`, `continue` and early `return`;
 - typed arrays: creation, literals, indexing, element assignment and
   `Length`;
 - calls to .NET static and instance methods, properties, constants and
@@ -77,14 +80,17 @@ A declared typed subset, exercised by the fixtures in `tests/fixtures`:
 
 Anything else is rejected before an assembly is written, with its line,
 column and reason: commands, pipelines, script blocks, expandable strings,
-`foreach`, `do`, `switch`, `break`, `continue`, and operators on mixed types.
-Nothing falls back to running the original script.
+`do`, `switch`, labeled `break` and `continue`, `break` or `continue`
+outside a loop, `foreach` over anything but a typed one-dimensional array,
+compound assignment to an array element, and operators on mixed types
+(`tests/Test-Rejections.ps1`). Nothing falls back to running the original
+script.
 
 ## Guarantees and how they are checked
 
 | Guarantee | Checked by |
 | --- | --- |
-| A compiled method returns what the same PowerShell method returns, or both throw | `tests/oracle/PowerShellSourceOracle.ps1`: every fixture method run as PowerShell and as IL on the same inputs (159 calls) |
+| A compiled method returns what the same PowerShell method returns, or both throw | `tests/oracle/PowerShellSourceOracle.ps1`: every fixture method run as PowerShell and as IL on the same inputs (196 calls) |
 | The emitter writes the IL the framework's own compiler would accept for the same tree | `tests/oracle/MicrosoftLambdaCompilerOracle.ps1`: the same trees compiled by `LambdaCompiler`, results compared |
 | Output references no `System.Management.Automation` type and no dynamic call site; its only assembly reference is `System.Private.CoreLib` | `tests/Test-ZeroSmaHost.ps1` |
 | The same input builds byte-identical assemblies with the same MVID | slices 1, 2, 4 and 5, which build twice and compare SHA-256 and MVID |
@@ -116,7 +122,7 @@ continues with a `Double`.
 pwsh -NoLogo -NoProfile -File ./tests/Test-ConsolidatedRunner.ps1
 ```
 
-The runner executes 16 suites, each in its own process. All pass on
+The runner executes 17 suites, each in its own process. All pass on
 PowerShell 7.6.6 with .NET 10.0.8 (the pinned CI tool) and on PowerShell
 7.7.0-preview.4 with .NET 11.0.0-preview.6.26359.118. Generated assemblies
 are written beneath `build/`, which Git ignores.
@@ -127,7 +133,7 @@ Version 0.1. Next:
 
 1. Run compiled `FindProfile` inside Pwsh's host on its x86-64, arm64 and
    arm32 Android targets.
-2. `foreach`, `break` and `continue`, then the constructs Pwsh's console core
+2. The constructs Pwsh's console core
    needs.
 3. Compile the compiler with itself, and publish the module.
 

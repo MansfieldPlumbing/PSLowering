@@ -511,6 +511,8 @@ function Write-IlExpression {
         } else { $lblHead }
 
         $IL.MarkLabel($lblHead)
+        # The continue label is the loop head, as in LambdaCompiler.EmitLoopExpression.
+        if ($Expr.ContinueLabel) { $IL.MarkLabel($lblContinue) }
         Write-IlExpression -IL $IL -Expr $Expr.Body -Context $Context
         $IL.Emit([Reflection.Emit.OpCodes]::Br, $lblHead)
         $IL.MarkLabel($lblBreak)

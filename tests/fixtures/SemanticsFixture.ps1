@@ -40,4 +40,25 @@ class SemanticsFixture {
     static [bool] StringLess([string] $a, [string] $b) {
         return $a -lt $b
     }
+
+    static [int] CompoundInt([int] $a, [int] $b) {
+        [int] $x = $a
+        $x += $b
+        $x *= 2
+        $x -= 1
+        $x %= 7
+        return $x
+    }
+
+    static [int] CompoundDivide([int] $a, [int] $b) {
+        [int] $x = $a
+        $x /= $b
+        return $x
+    }
+
+    static [string] Concat([string] $a, [string] $b) {
+        [string] $s = $a + '-'
+        $s += $b
+        return $s
+    }
 }
