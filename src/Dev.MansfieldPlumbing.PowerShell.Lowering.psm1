@@ -53,7 +53,13 @@ function Export-LoweredAssembly {
         [Parameter()][string] $ClassName,
         [Parameter()][string[]] $MethodNames,
         [Parameter(Mandatory)][string] $OutputPath,
-        [switch] $Deterministic = $true
+        [switch] $Deterministic = $true,
+
+        # Name of a static method to make the program's entry point. It must
+        # return [int] or [void] and take no parameters or one [string[]].
+        # The output is then an executable with a runtime configuration
+        # beside it, runnable with `dotnet <OutputPath>`.
+        [Parameter()][string] $EntryPoint
     )
 
     $fullSourcePath = if ([IO.Path]::IsPathFullyQualified($SourcePath)) {
@@ -94,6 +100,7 @@ function Export-LoweredAssembly {
     }
 
     $emittedMethods = [System.Collections.Generic.List[string]]::new()
+    $entryBuilder = $null
 
     foreach ($m in $methods) {
         $lowered = Convert-MethodAstToLambda -MethodAst $m
@@ -123,9 +130,26 @@ function Export-LoweredAssembly {
 
         Write-IlMethodBody -Lambda $lowered.Lambda -MethodBuilder $mb -IsStatic:$lowered.IsStatic
         $emittedMethods.Add($lowered.Name)
+
+        if ($EntryPoint -and $lowered.Name -ceq $EntryPoint) {
+            # ECMA-335 II.15.4.1.2: a static method returning int32 or void,
+            # taking no parameters or one string[].
+            $types = @($lowered.ParameterTypes)
+            $validReturn = $lowered.ReturnType -in [int], [void]
+            $validParams = $types.Count -eq 0 -or ($types.Count -eq 1 -and $types[0] -eq [string[]])
+            if (-not $lowered.IsStatic -or -not $validReturn -or -not $validParams) {
+                throw "[{0}:{1}] Entry point '{2}' must be static, return [int] or [void], and take no parameters or one [string[]]." -f `
+                    $m.Extent.StartLineNumber, $m.Extent.StartColumnNumber, $EntryPoint
+            }
+            $entryBuilder = $mb
+        }
     }
 
-    $saveResult = Save-PersistedAssemblySession -Session $session -OutputPath $OutputPath -Deterministic:$Deterministic
+    if ($EntryPoint -and -not $entryBuilder) {
+        throw "Entry point '$EntryPoint' is not an exported method of class '$($classAst.Name)'."
+    }
+
+    $saveResult = Save-PersistedAssemblySession -Session $session -OutputPath $OutputPath -Deterministic:$Deterministic -EntryPoint $entryBuilder
 
     [pscustomobject]@{
         OutputPath     = $saveResult.OutputPath
@@ -134,6 +158,8 @@ function Export-LoweredAssembly {
         ClassName      = $classAst.Name
         EmittedMethods = $emittedMethods.ToArray()
         Deterministic  = $saveResult.Deterministic
+        EntryPoint     = $saveResult.EntryPoint
+        RuntimeConfig  = $saveResult.RuntimeConfig
     }
 }
 

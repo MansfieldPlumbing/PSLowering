@@ -30,6 +30,7 @@ $testSuites = @(
     @{ Name = 'Slice 11: Fresh Zero-SMA Host Smoke Test';  Path = 'tests/Test-ZeroSmaHost.ps1';             Args = @() }
     @{ Name = 'Slice 12: PowerShell Source Oracle';        Path = 'tests/oracle/PowerShellSourceOracle.ps1'; Args = @() }
     @{ Name = 'Consumer: Pwsh Persisted-Method Admission';  Path = 'tests/consumers/Test-PwshAdmission.ps1'; Args = @() }
+    @{ Name = 'Host: dotnet Without PowerShell';             Path = 'tests/Test-DotnetHost.ps1';               Args = @() }
 )
 
 Write-Host "================================================================================" -ForegroundColor Cyan

@@ -40,7 +40,12 @@ function Save-PersistedAssemblySession {
         [Parameter(Mandatory)]
         [string] $OutputPath,
 
-        [switch] $Deterministic = $true
+        [switch] $Deterministic = $true,
+
+        # A static method to mark as the entry point. The image is then an
+        # executable rather than a library; without it the bytes are exactly
+        # what PersistedAssemblyBuilder.Save writes.
+        [Parameter()][Reflection.Emit.MethodBuilder] $EntryPoint
     )
 
     $fullOut = if ([IO.Path]::IsPathFullyQualified($OutputPath)) {
@@ -62,13 +67,35 @@ function Save-PersistedAssemblySession {
         }
     }
 
-    $ms = [IO.MemoryStream]::new()
-    try {
-        $Session.Builder.Save($ms)
-        $bytes = $ms.ToArray()
+    if ($EntryPoint) {
+        # PersistedAssemblyBuilder.Save always writes a library with no entry
+        # point (WritePEImage, runtime ab194157). An executable is the same
+        # metadata serialized by ManagedPEBuilder with an executable header
+        # and the entry method's handle, which exists once metadata is built.
+        $ilStream = $null
+        $fieldData = $null
+        $metadata = $Session.Builder.GenerateMetadata([ref]$ilStream, [ref]$fieldData)
+        if ($EntryPoint.MetadataToken -eq 0) {
+            throw "Entry point '$($EntryPoint.Name)' has no metadata token after metadata generation."
+        }
+        $entryHandle = [Reflection.Metadata.Ecma335.MetadataTokens]::MethodDefinitionHandle($EntryPoint.MetadataToken -band 0x00FFFFFF)
+        $peBuilder = [Reflection.PortableExecutable.ManagedPEBuilder]::new(
+            [Reflection.PortableExecutable.PEHeaderBuilder]::CreateExecutableHeader(),
+            [Reflection.Metadata.Ecma335.MetadataRootBuilder]::new($metadata),
+            $ilStream, $fieldData, $null, $null, $null, 0, $entryHandle)
+        $peBlob = [Reflection.Metadata.BlobBuilder]::new()
+        $null = $peBuilder.Serialize($peBlob)
+        $bytes = $peBlob.ToArray()
     }
-    finally {
-        $ms.Dispose()
+    else {
+        $ms = [IO.MemoryStream]::new()
+        try {
+            $Session.Builder.Save($ms)
+            $bytes = $ms.ToArray()
+        }
+        finally {
+            $ms.Dispose()
+        }
     }
 
     if ($Deterministic) {
@@ -87,6 +114,21 @@ function Save-PersistedAssemblySession {
         }
     }
 
+    # An executable runs on the shared framework it was compiled against: the
+    # runtime configuration names that framework and its exact version.
+    $runtimeConfigPath = $null
+    if ($EntryPoint) {
+        $runtimeVersion = ([object].Assembly.GetCustomAttributes([Reflection.AssemblyInformationalVersionAttribute], $false)[0].InformationalVersion -split '\+')[0]
+        $runtimeConfigPath = [IO.Path]::ChangeExtension($fullOut, '.runtimeconfig.json')
+        $runtimeConfig = [ordered]@{
+            runtimeOptions = [ordered]@{
+                tfm       = "net$([Environment]::Version.Major).$([Environment]::Version.Minor)"
+                framework = [ordered]@{ name = 'Microsoft.NETCore.App'; version = $runtimeVersion }
+            }
+        }
+        [IO.File]::WriteAllText($runtimeConfigPath, ($runtimeConfig | ConvertTo-Json -Depth 4))
+    }
+
     $sha256 = [Security.Cryptography.SHA256]::HashData($bytes)
     $hexHash = [BitConverter]::ToString($sha256).Replace('-', '')
 
@@ -95,5 +137,7 @@ function Save-PersistedAssemblySession {
         Length       = $bytes.Length
         SHA256       = $hexHash
         Deterministic = [bool]$Deterministic
+        EntryPoint    = if ($EntryPoint) { $EntryPoint.Name } else { $null }
+        RuntimeConfig = $runtimeConfigPath
     }
 }

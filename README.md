@@ -50,6 +50,11 @@ $type = [Reflection.Assembly]::LoadFile("$PWD/build/Contract.dll").GetType('Cont
 $type.GetMethod('VoiceRowIndex').Invoke($null, @(42))   # 41
 ```
 
+With `-EntryPoint <method>`, the output is an executable with a runtime
+configuration beside it, run with `dotnet <file>.dll`. The entry method must
+be static, return `[int]` or `[void]`, and take no parameters or one
+`[string[]]`.
+
 `Get-LoweringCapability` reports the PowerShell and .NET versions in use and
 the semantic contract. `ConvertTo-TypedExpression` returns a method's
 lowered expression tree for inspection, and `Test-LoweredAssembly` checks a
@@ -84,6 +89,7 @@ Nothing falls back to running the original script.
 | Output references no `System.Management.Automation` type and no dynamic call site; its only assembly reference is `System.Private.CoreLib` | `tests/Test-ZeroSmaHost.ps1` |
 | The same input builds byte-identical assemblies with the same MVID | slices 1, 2, 4 and 5, which build twice and compare SHA-256 and MVID |
 | Output passes Pwsh's persisted-method admission | `tests/consumers/Test-PwshAdmission.ps1`: `Test-ExpressionGraph` from Pwsh's `setup.ps1` at a pinned commit and SHA-256 |
+| Compiled code runs with the `dotnet` host alone: no PowerShell engine assembly in the process | `tests/Test-DotnetHost.ps1`: a program compiled with `-EntryPoint Main` is run by `dotnet exec`, checks the loaded assemblies itself, and returns the expected exit codes |
 | The Kokoro `VoiceRowIndex` contract holds | `tests/Test-Slice9.ps1`: all counts 1-510, the out-of-range and Int32 extremes, the exception's parameter name |
 
 ## Semantics
@@ -110,7 +116,7 @@ continues with a `Double`.
 pwsh -NoLogo -NoProfile -File ./tests/Test-ConsolidatedRunner.ps1
 ```
 
-The runner executes 15 suites, each in its own process. All pass on
+The runner executes 16 suites, each in its own process. All pass on
 PowerShell 7.6.6 with .NET 10.0.8 (the pinned CI tool) and on PowerShell
 7.7.0-preview.4 with .NET 11.0.0-preview.6.26359.118. Generated assemblies
 are written beneath `build/`, which Git ignores.
@@ -121,11 +127,9 @@ Version 0.1. Next:
 
 1. Run compiled `FindProfile` inside Pwsh's host on its x86-64, arm64 and
    arm32 Android targets.
-2. Prove execution in a host without PowerShell: a compiled entry point run
-   by the `dotnet` host alone.
-3. `foreach`, `break` and `continue`, then the constructs Pwsh's console core
+2. `foreach`, `break` and `continue`, then the constructs Pwsh's console core
    needs.
-4. Compile the compiler with itself, and publish the module.
+3. Compile the compiler with itself, and publish the module.
 
 ## Repository layout
 
