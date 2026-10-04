@@ -39,8 +39,8 @@ $voiceMethod = $type.GetMethod('VoiceRowIndex')
 $readyMethod = $type.GetMethod('SynthesisReady')
 
 # SynthesisReady
-if ($readyMethod.Invoke($null, $null) -ne $true) {
-    throw "SynthesisReady() failed: expected true"
+if ($readyMethod.Invoke($null, $null) -ne $false) {
+    throw "SynthesisReady() failed: expected false; the consumer contract reports no synthesis"
 }
 
 # Test all valid phoneme counts 1..510
@@ -52,13 +52,17 @@ for ($c = 1; $c -le 510; $c++) {
 }
 
 # Test out-of-range counts
-foreach ($bad in @(-10, -1, 0, 511, 512, 1000)) {
+foreach ($bad in @([int]::MinValue, -10, -1, 0, 511, 512, 1000, [int]::MaxValue)) {
     $threw = $false
     try {
         $null = $voiceMethod.Invoke($null, [object[]]@($bad))
     }
     catch {
-        if ($_.Exception.InnerException -is [System.ArgumentOutOfRangeException] -or $_.Exception -is [System.ArgumentOutOfRangeException]) {
+        $base = $_.Exception.GetBaseException()
+        if ($base -is [System.ArgumentOutOfRangeException]) {
+            if ($base.ParamName -cne 'phonemeCount') {
+                throw "VoiceRowIndex($bad) named parameter '$($base.ParamName)', expected 'phonemeCount'"
+            }
             $threw = $true
         }
     }
@@ -75,7 +79,7 @@ $childCmd = @"
 `$m = `$t.GetMethod('VoiceRowIndex')
 `$r = `$t.GetMethod('SynthesisReady')
 
-if (`$r.Invoke(`$null, `$null) -ne `$true) { exit 1 }
+if (`$r.Invoke(`$null, `$null) -ne `$false) { exit 1 }
 
 # Spot check boundary points
 if (`$m.Invoke(`$null, [object[]]@(1)) -ne 0) { exit 2 }

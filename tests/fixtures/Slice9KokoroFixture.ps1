@@ -10,6 +10,6 @@ class VoiceRowIndexContract {
     }
 
     static [bool] SynthesisReady() {
-        return $true
+        return $false
     }
 }
