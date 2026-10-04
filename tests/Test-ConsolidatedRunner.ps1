@@ -6,7 +6,8 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$pwshExe = if ($PwshPath) { $PwshPath } else { [Environment]::ProcessPath }
+. (Join-Path $PSScriptRoot 'ChildPwsh.ps1')
+$pwshCommand = if ($PwshPath) { [string[]]@($PwshPath) } else { Get-ChildPwshCommand }
 $repoRoot = Split-Path $PSScriptRoot -Parent
 $buildDir = Join-Path $repoRoot 'build'
 if (-not (Test-Path $buildDir)) {
@@ -33,7 +34,7 @@ $testSuites = @(
 
 Write-Host "================================================================================" -ForegroundColor Cyan
 Write-Host " PSPersistence Consolidated Verification Suite" -ForegroundColor Cyan
-Write-Host " PowerShell: $pwshExe" -ForegroundColor Cyan
+Write-Host " PowerShell: $($pwshCommand -join ' ')" -ForegroundColor Cyan
 Write-Host " Runtime:    $([Runtime.InteropServices.RuntimeInformation]::FrameworkDescription)" -ForegroundColor Cyan
 Write-Host " OS:         $([Runtime.InteropServices.RuntimeInformation]::OSDescription)" -ForegroundColor Cyan
 Write-Host "================================================================================" -ForegroundColor Cyan
@@ -47,13 +48,13 @@ foreach ($suite in $testSuites) {
     Write-Host "`n>>> Running: $($suite.Name) [$($suite.Path)]..." -ForegroundColor Yellow
 
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
-    $cmdArgs = @('-NoProfile', '-File', $scriptFullPath) + $suite.Args
+    $cmdArgs = @($pwshCommand | Select-Object -Skip 1) + @('-NoProfile', '-File', $scriptFullPath) + $suite.Args
 
     $outputLines = [System.Collections.Generic.List[string]]::new()
     $exitCode = 0
     try {
         $pinfo = [System.Diagnostics.ProcessStartInfo]::new()
-        $pinfo.FileName = $pwshExe
+        $pinfo.FileName = $pwshCommand[0]
         foreach ($arg in $cmdArgs) {
             $pinfo.ArgumentList.Add($arg)
         }

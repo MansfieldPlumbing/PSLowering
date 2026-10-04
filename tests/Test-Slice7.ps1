@@ -77,8 +77,9 @@ if (`$max -eq 27 -and `$sub -eq 'World' -and `$greeting -eq 'Hello, Reader!' -an
 }
 "@
 
-$pwshExe = [Environment]::ProcessPath
-$childOut = & $pwshExe -NoProfile -Command $childCmd
+. (Join-Path $PSScriptRoot 'ChildPwsh.ps1')
+$pwshCommand = Get-ChildPwshCommand
+$childOut = & $pwshCommand[0] @($pwshCommand | Select-Object -Skip 1) -NoProfile -Command $childCmd
 Write-Host $childOut
 if ($childOut -notmatch 'FRESH_PROCESS_SLICE7=PASS') {
     throw "Fresh process verification failed: $childOut"

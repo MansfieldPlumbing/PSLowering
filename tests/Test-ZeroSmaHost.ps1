@@ -127,8 +127,9 @@ if ($t9.GetMethod('VoiceRowIndex').Invoke($null, [object[]]@(510)) -ne 509) { ex
 Write-Output 'FRESH_PROCESS_ALL_SLICES=PASS'
 '@
 
-$pwshExe = [Environment]::ProcessPath
-$childOut = & $pwshExe -NoProfile -Command $childScript
+. (Join-Path $PSScriptRoot 'ChildPwsh.ps1')
+$pwshCommand = Get-ChildPwshCommand
+$childOut = & $pwshCommand[0] @($pwshCommand | Select-Object -Skip 1) -NoProfile -Command $childScript
 Write-Host $childOut
 if ($LASTEXITCODE -ne 0 -or $childOut -notmatch 'FRESH_PROCESS_ALL_SLICES=PASS') {
     throw "Fresh child process execution failed (ExitCode=$LASTEXITCODE): $childOut"

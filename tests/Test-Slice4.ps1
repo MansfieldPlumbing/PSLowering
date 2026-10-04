@@ -85,10 +85,11 @@ Write-Output 'FRESH_PROCESS_SLICE4=PASS'
 $freshScriptPath = Join-Path $outDir 'invoke_fresh.ps1'
 [IO.File]::WriteAllText($freshScriptPath, $freshScript)
 
-$pwshPath = (Get-Process -Id $PID).Path
-$proc = Start-Process -FilePath $pwshPath -ArgumentList @('-NoLogo', '-NoProfile', '-File', $freshScriptPath) -Wait -PassThru -NoNewWindow
-if ($proc.ExitCode -ne 0) {
-    throw "Fresh-process invocation failed with exit code $($proc.ExitCode)"
+. (Join-Path $PSScriptRoot 'ChildPwsh.ps1')
+$pwshCommand = Get-ChildPwshCommand
+& $pwshCommand[0] @($pwshCommand | Select-Object -Skip 1) -NoLogo -NoProfile -File $freshScriptPath | Out-Host
+if ($LASTEXITCODE -ne 0) {
+    throw "Fresh-process invocation failed with exit code $LASTEXITCODE"
 }
 
 # 3. Determinism check
