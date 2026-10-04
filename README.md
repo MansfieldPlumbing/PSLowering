@@ -87,7 +87,14 @@ A declared typed subset, exercised by the fixtures in `tests/fixtures`:
   assignment and `Length`;
 - calls to .NET static and instance methods, properties, constants and
   constructors, bound by exact signature;
-- `throw` and `try`/`catch`/`finally`.
+- `throw` and `try`/`catch`/`finally`;
+- native imports: a static method marked
+  `[System.Runtime.InteropServices.LibraryImport('library', EntryPoint = 'name')]`
+  whose body is a single `throw` compiles to a P/Invoke method. Parameters and
+  returns are blittable (integers, floating point, `IntPtr`, `UIntPtr`);
+  `[string]` parameters need `StringMarshalling` `Utf8` or `Utf16`. Mainline
+  PowerShell keeps the attribute as metadata and runs the `throw`, so the
+  source stays valid PowerShell.
 
 Anything else is rejected before an assembly is written, with its line,
 column and reason: commands, pipelines, script blocks, expandable strings,
@@ -108,6 +115,7 @@ running the original script.
 | The same input builds byte-identical assemblies with the same MVID | slices 1, 2, 4 and 5, which build twice and compare SHA-256 and MVID |
 | Output passes Pwsh's persisted-method admission | `tests/consumers/Test-PwshAdmission.ps1`: `Test-ExpressionGraph` from Pwsh's `setup.ps1` at a pinned commit and SHA-256 |
 | Compiled code runs with the `dotnet` host alone: no PowerShell engine assembly in the process | `tests/Test-DotnetHost.ps1`: a program compiled with `-EntryPoint Main` is run by `dotnet exec`, checks the loaded assemblies itself, and returns the expected exit codes |
+| Native imports call the native function with the declared marshalling | `tests/Test-NativeImports.ps1` (Windows): process ID, UTF-16 and UTF-8 string lengths and a tick count against .NET's own answers; invalid declarations rejected |
 | The Kokoro `VoiceRowIndex` contract holds | `tests/Test-Slice9.ps1`: all counts 1-510, the out-of-range and Int32 extremes, the exception's parameter name |
 
 ## Semantics
@@ -134,7 +142,7 @@ continues with a `Double`.
 pwsh -NoLogo -NoProfile -File ./tests/Test-ConsolidatedRunner.ps1
 ```
 
-The runner executes 17 suites, each in its own process. All pass on
+The runner executes 18 suites, each in its own process. All pass on
 PowerShell 7.6.6 with .NET 10.0.8 (the pinned CI tool) and on PowerShell
 7.7.0-preview.4 with .NET 11.0.0-preview.6.26359.118. Generated assemblies
 are written beneath `build/`, which Git ignores.

@@ -32,6 +32,7 @@ $testSuites = @(
     @{ Name = 'Consumer: Pwsh Persisted-Method Admission';  Path = 'tests/consumers/Test-PwshAdmission.ps1'; Args = @() }
     @{ Name = 'Host: dotnet Without PowerShell';             Path = 'tests/Test-DotnetHost.ps1';               Args = @() }
     @{ Name = 'Admission: Rejected Constructs';              Path = 'tests/Test-Rejections.ps1';               Args = @() }
+    @{ Name = 'Interop: Native Imports';                     Path = 'tests/Test-NativeImports.ps1';            Args = @() }
 )
 
 Write-Host "================================================================================" -ForegroundColor Cyan

@@ -121,6 +121,13 @@ function Export-LoweredAssembly {
                 $script:IlMap.Members[$mc] = $cb
                 [pscustomobject]@{ Ast = $ctorAst; Builder = $cb }
             }
+            foreach ($n in $c.NativeImports) {
+                $types = Get-ParameterTypes $n.Ast
+                $mm = $mirrorType.GetMethod($n.Ast.Name, $declared, $null, $types, $null)
+                $names = [string[]]@($n.Ast.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath })
+                $script:IlMap.Members[$mm] = Add-NativeImportMethod -TypeBuilder $tb -Name $mm.Name -Import $n.Import `
+                    -ReturnType (Get-IlType $mm.ReturnType) -ParameterTypes ([Type[]]@($types | ForEach-Object { Get-IlType $_ })) -ParameterNames $names
+            }
             $methods = @($c.Methods)
             if ($MethodNames -and $c.Name -eq $targetClass.Name) { $methods = @($methods | Where-Object { $_.Name -in $MethodNames }) }
             $methodPlans = foreach ($m in $methods) {
