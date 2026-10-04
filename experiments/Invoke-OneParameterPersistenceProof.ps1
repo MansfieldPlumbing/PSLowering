@@ -1453,8 +1453,8 @@ function Export-PersistedClass {
 
     $sig = Get-MemberSignature $member
 
-    if ($sig.ParameterTypes.Count -ne 1) {
-        throw 'This first end-to-end proof intentionally supports exactly one parameter.'
+    if ($sig.ParameterTypes.Count -lt 1) {
+        throw 'Method must have at least one parameter.'
     }
 
     if ($sig.IsStatic) {
@@ -1502,15 +1502,6 @@ function Export-PersistedClass {
         throw 'SMA did not expose NameToIndexMap.'
     }
 
-    $paramName = $sig.ParameterNames[0]
-
-    if (-not $lowering.NameToIndexMap.ContainsKey($paramName)) {
-        throw "SMA locals map has no '$paramName'."
-    }
-
-    $slot = [int]$lowering.NameToIndexMap[$paramName]
-    $tupleMemberName = 'Item{0:D3}' -f $slot
-
     # Find the semantic return expression SMA generated.
     $pipeAdd = Find-ReturnPipeAdd $lowering.Lambda.Body
 
@@ -1533,26 +1524,42 @@ function Export-PersistedClass {
     }
 
     Write-Verbose "EXTRACTED_VALUE_TYPE=$($value.Type.FullName)"
-    Write-Verbose "PARAM_SLOT=$slot"
-    Write-Verbose "PARAM_TUPLE_MEMBER=$tupleMemberName"
 
-    $x = [Linq.Expressions.Expression]::Parameter(
-        $sig.ParameterTypes[0],
-        $paramName
-    )
+    $paramExprs = [System.Collections.Generic.List[Linq.Expressions.ParameterExpression]]::new()
+    $paramSlots = [System.Collections.Generic.List[int]]::new()
+    $tupleMembers = [System.Collections.Generic.List[string]]::new()
+    $totalReplacements = 0
+    $rewritten = $value
 
-    $replacementCount = 0
+    for ($i = 0; $i -lt $sig.ParameterTypes.Count; $i++) {
+        $pName = $sig.ParameterNames[$i]
+        $pType = $sig.ParameterTypes[$i]
 
-    $rewritten = Convert-ExpressionLeaf `
-        -Expression $value `
-        -TupleMemberName $tupleMemberName `
-        -Replacement $x `
-        -ReplacementCount ([ref]$replacementCount)
+        if (-not $lowering.NameToIndexMap.ContainsKey($pName)) {
+            throw "SMA locals map has no '$pName'."
+        }
 
-    Write-Verbose "LEAF_REPLACEMENTS=$replacementCount"
+        $slot = [int]$lowering.NameToIndexMap[$pName]
+        $tupleMemberName = 'Item{0:D3}' -f $slot
+        $pExpr = [Linq.Expressions.Expression]::Parameter($pType, $pName)
 
-    if ($replacementCount -ne 1) {
-        throw "Expected exactly one '$tupleMemberName' replacement; got $replacementCount."
+        $paramExprs.Add($pExpr)
+        $paramSlots.Add($slot)
+        $tupleMembers.Add($tupleMemberName)
+
+        $repCount = 0
+        $rewritten = Convert-ExpressionLeaf `
+            -Expression $rewritten `
+            -TupleMemberName $tupleMemberName `
+            -Replacement $pExpr `
+            -ReplacementCount ([ref]$repCount)
+        $totalReplacements += $repCount
+    }
+
+    Write-Verbose "LEAF_REPLACEMENTS=$totalReplacements"
+
+    if ($totalReplacements -lt $sig.ParameterTypes.Count) {
+        throw "Expected at least $($sig.ParameterTypes.Count) tuple member replacement(s); got $totalReplacements."
     }
 
     if ($rewritten.Type -ne $sig.ReturnType) {
@@ -1586,19 +1593,17 @@ function Export-PersistedClass {
         throw "Persistable expression type '$($persistable.Type)' does not match return type '$($sig.ReturnType)'."
     }
 
-    $delegateType = [Linq.Expressions.Expression]::GetDelegateType(
-        [type[]]@(
-            $sig.ParameterTypes[0],
-            $sig.ReturnType
-        )
-    )
+    $delTypes = [System.Collections.Generic.List[type]]::new()
+    $delTypes.AddRange([type[]]$sig.ParameterTypes)
+    $delTypes.Add([type]$sig.ReturnType)
+    $delegateType = [Linq.Expressions.Expression]::GetDelegateType($delTypes.ToArray())
 
     $coreLambda = [Linq.Expressions.Expression]::Lambda(
         $delegateType,
         $persistable,
         $sig.Name,
         $false,
-        [Linq.Expressions.ParameterExpression[]]@($x)
+        [Linq.Expressions.ParameterExpression[]]$paramExprs.ToArray()
     )
 
     $debugProp = [Linq.Expressions.Expression].GetProperty(
@@ -1623,11 +1628,13 @@ function Export-PersistedClass {
         $sig.ParameterTypes
     )
 
-    $null = $mb.DefineParameter(
-        1,
-        [Reflection.ParameterAttributes]::None,
-        $paramName
-    )
+    for ($i = 0; $i -lt $sig.ParameterNames.Count; $i++) {
+        $null = $mb.DefineParameter(
+            $i + 1,
+            [Reflection.ParameterAttributes]::None,
+            $sig.ParameterNames[$i]
+        )
+    }
 
     $emitResult = Write-MicrosoftLambdaToMethodBuilder `
         -Lambda $coreLambda `
@@ -1645,10 +1652,10 @@ function Export-PersistedClass {
         ClassName = $typeAst.Name
         MethodName = $sig.Name
         ReturnType = $sig.ReturnType.FullName
-        ParameterType = $sig.ParameterTypes[0].FullName
-        ParameterSlot = $slot
-        TupleMember = $tupleMemberName
-        LeafReplacements = $replacementCount
+        ParameterTypes = ($sig.ParameterTypes | ForEach-Object { $_.FullName }) -join ', '
+        ParameterSlots = ($paramSlots | ForEach-Object { $_.ToString() }) -join ', '
+        TupleMembers = $tupleMembers -join ', '
+        LeafReplacements = $totalReplacements
         DynamicNodesBefore = $dynamicBefore
         PersistedCallSites = $sites.Count
         DynamicNodesAfter = $dynamicAfter
