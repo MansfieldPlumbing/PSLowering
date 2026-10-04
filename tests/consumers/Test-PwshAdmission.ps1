@@ -37,15 +37,20 @@ if ($actual -ne $setupSha256) {
     throw "Pwsh setup.ps1 at $pwshCommit has SHA-256 $actual, expected $setupSha256."
 }
 
-# Load only the two admission functions; setup.ps1 itself is never run.
+# Load only the two admission functions; setup.ps1 itself is never run. They
+# are written to their own file beside the verified setup.ps1 and run from it.
+$functionFile = Join-Path $cache 'admission-functions.ps1'
+$functionText = [Collections.Generic.List[string]]::new()
 $setupAst = [System.Management.Automation.Language.Parser]::ParseFile($setup, [ref]$null, [ref]$null)
 foreach ($name in 'Test-CallSiteType', 'Test-ExpressionGraph') {
     $definition = $setupAst.Find({
         param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq $name
     }, $true)
     if (-not $definition) { throw "Pwsh setup.ps1 at $pwshCommit defines no $name." }
-    . ([scriptblock]::Create($definition.Extent.Text))
+    $functionText.Add($definition.Extent.Text)
 }
+Set-Content -LiteralPath $functionFile -Value ($functionText -join ([Environment]::NewLine * 2)) -Encoding utf8
+. $functionFile
 
 $checked = 0
 $skipped = [Collections.Generic.List[string]]::new()

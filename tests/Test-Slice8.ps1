@@ -104,7 +104,9 @@ if (`$r1 -eq 10 -and `$threw -and `$p1 -eq 456 -and `$p2 -eq -7 -and `$fin -eq 2
 
 . (Join-Path $PSScriptRoot 'ChildPwsh.ps1')
 $pwshCommand = Get-ChildPwshCommand
-$childOut = & $pwshCommand[0] @($pwshCommand | Select-Object -Skip 1) -NoProfile -Command $childCmd
+$childScriptPath = Join-Path $outDir 'fresh-process.ps1'
+Set-Content -LiteralPath $childScriptPath -Value $childCmd
+$childOut = & $pwshCommand[0] @($pwshCommand | Select-Object -Skip 1) -NoProfile -File $childScriptPath
 Write-Host $childOut
 if ($childOut -notmatch 'FRESH_PROCESS_SLICE8=PASS') {
     throw "Fresh process verification failed: $childOut"

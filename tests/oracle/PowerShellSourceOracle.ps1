@@ -23,9 +23,12 @@ $outDir = Join-Path $repoRoot 'build/source-oracle'
 $null = New-Item -ItemType Directory -Force -Path $outDir
 
 function Get-SourceType([string] $Path, [string] $Class) {
-    # The class as PowerShell itself defines it: the fixture's text followed by
-    # its type literal, so the literal resolves to that script's class.
-    & ([scriptblock]::Create([IO.File]::ReadAllText($Path) + "`n[$Class]"))
+    # The class as PowerShell itself defines it: dot-source the fixture file and
+    # resolve the class by name, which finds PowerShell's own dynamic type.
+    . $Path
+    $type = $Class -as [type]
+    if (-not $type -or -not $type.Assembly.IsDynamic) { throw "$Path does not define PowerShell class $Class." }
+    $type
 }
 
 function Get-CompiledType([string] $Path, [string] $Class) {
@@ -33,7 +36,7 @@ function Get-CompiledType([string] $Path, [string] $Class) {
     if (-not (Test-Path -LiteralPath $dll)) {
         Export-LoweredAssembly -SourcePath $Path -ClassName $Class -OutputPath $dll -Deterministic | Out-Null
     }
-    [Reflection.Assembly]::Load([IO.File]::ReadAllBytes($dll)).GetType($Class, $true)
+    [Reflection.Assembly]::LoadFile($dll).GetType($Class, $true)
 }
 
 function Invoke-Side([type] $Type, [string] $Method, [object[]] $Arguments) {

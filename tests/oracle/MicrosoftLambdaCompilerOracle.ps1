@@ -28,8 +28,7 @@ function Get-OracleEmittedType {
     $outDll = Join-Path $outDir "$ClassName.dll"
 
     Export-LoweredAssembly -SourcePath $FixturePath -ClassName $ClassName -OutputPath $outDll -Deterministic | Out-Null
-    $bytes = [IO.File]::ReadAllBytes($outDll)
-    $asm = [Reflection.Assembly]::Load($bytes)
+    $asm = [Reflection.Assembly]::LoadFile($outDll)
     $type = $asm.GetType($ClassName, $true)
 
     $script:OracleTypeCache[$ClassName] = $type

@@ -95,7 +95,9 @@ if (`$a.Length -eq 5 -and `$s -eq 15 -and `$scaled[1] -eq 5.0 -and `$lit[3] -eq 
 
 . (Join-Path $PSScriptRoot 'ChildPwsh.ps1')
 $pwshCommand = Get-ChildPwshCommand
-$childOut = & $pwshCommand[0] @($pwshCommand | Select-Object -Skip 1) -NoProfile -Command $childCmd
+$childScriptPath = Join-Path $outDir 'fresh-process.ps1'
+Set-Content -LiteralPath $childScriptPath -Value $childCmd
+$childOut = & $pwshCommand[0] @($pwshCommand | Select-Object -Skip 1) -NoProfile -File $childScriptPath
 Write-Host $childOut
 if ($childOut -notmatch 'FRESH_PROCESS_SLICE6=PASS') {
     throw "Fresh process verification failed: $childOut"
