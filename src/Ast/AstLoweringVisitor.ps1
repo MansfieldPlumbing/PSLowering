@@ -95,7 +95,7 @@ function New-PowerShellArithmetic {
     }
 }
 
-function Parse-PowerShellClass {
+function Read-PowerShellClass {
     <#
     .SYNOPSIS
         Parses PowerShell source code and validates the target class definition.

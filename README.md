@@ -74,7 +74,7 @@ continues with a `Double`.
 pwsh -NoLogo -NoProfile -File ./tests/Test-ConsolidatedRunner.ps1
 ```
 
-The runner executes 14 suites, each in its own process:
+The runner executes 15 suites, each in its own process:
 
 - the SMA persistence baselines;
 - slices 1-9: signatures, arithmetic, comparisons, control flow, arrays,
@@ -82,9 +82,11 @@ The runner executes 14 suites, each in its own process:
 - the LambdaCompiler oracle, which compiles the same expression trees with
   the framework's compiler and compares results;
 - a fresh-process host that loads every compiled assembly without SMA;
-- the PowerShell source oracle.
+- the PowerShell source oracle;
+- Pwsh's persisted-method admission rule (`Test-ExpressionGraph` from its
+  `setup.ps1` at a pinned commit), applied to every fixture method.
 
-All 14 pass on PowerShell 7.7.0-preview.4 with .NET
+All 15 pass on PowerShell 7.7.0-preview.4 with .NET
 11.0.0-preview.6.26359.118. CI runs the pinned PowerShell 7.6.6 .NET tool.
 
 Generated assemblies are written beneath `build/`, which Git ignores.

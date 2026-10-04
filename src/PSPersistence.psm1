@@ -68,7 +68,7 @@ function Export-LoweredAssembly {
     }
 
     $source = [IO.File]::ReadAllText($fullSourcePath)
-    $parsed = Parse-PowerShellClass -Source $source -ClassName $ClassName
+    $parsed = Read-PowerShellClass -Source $source -ClassName $ClassName
     $classAst = $parsed.ClassAst
 
     $assemblyName = [IO.Path]::GetFileNameWithoutExtension($OutputPath)
@@ -121,7 +121,7 @@ function Export-LoweredAssembly {
             )
         }
 
-        Emit-MethodBody -Lambda $lowered.Lambda -MethodBuilder $mb -IsStatic:$lowered.IsStatic
+        Write-IlMethodBody -Lambda $lowered.Lambda -MethodBuilder $mb -IsStatic:$lowered.IsStatic
         $emittedMethods.Add($lowered.Name)
     }
 

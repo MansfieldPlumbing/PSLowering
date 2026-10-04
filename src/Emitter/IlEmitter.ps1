@@ -1,7 +1,7 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-function Emit-LoadArg([Reflection.Emit.ILGenerator]$IL, [int]$Index) {
+function Write-IlArgumentLoad([Reflection.Emit.ILGenerator]$IL, [int]$Index) {
     switch ($Index) {
         0 { $IL.Emit([Reflection.Emit.OpCodes]::Ldarg_0); return }
         1 { $IL.Emit([Reflection.Emit.OpCodes]::Ldarg_1); return }
@@ -15,7 +15,7 @@ function Emit-LoadArg([Reflection.Emit.ILGenerator]$IL, [int]$Index) {
     }
 }
 
-function Emit-StoreArg([Reflection.Emit.ILGenerator]$IL, [int]$Index) {
+function Write-IlArgumentStore([Reflection.Emit.ILGenerator]$IL, [int]$Index) {
     if ($Index -le 255) {
         $IL.Emit([Reflection.Emit.OpCodes]::Starg_S, [byte]$Index)
     } else {
@@ -23,7 +23,7 @@ function Emit-StoreArg([Reflection.Emit.ILGenerator]$IL, [int]$Index) {
     }
 }
 
-function Emit-LoadLoc([Reflection.Emit.ILGenerator]$IL, [Reflection.Emit.LocalBuilder]$Loc) {
+function Write-IlLocalLoad([Reflection.Emit.ILGenerator]$IL, [Reflection.Emit.LocalBuilder]$Loc) {
     $idx = $Loc.LocalIndex
     switch ($idx) {
         0 { $IL.Emit([Reflection.Emit.OpCodes]::Ldloc_0); return }
@@ -38,7 +38,7 @@ function Emit-LoadLoc([Reflection.Emit.ILGenerator]$IL, [Reflection.Emit.LocalBu
     }
 }
 
-function Emit-StoreLoc([Reflection.Emit.ILGenerator]$IL, [Reflection.Emit.LocalBuilder]$Loc) {
+function Write-IlLocalStore([Reflection.Emit.ILGenerator]$IL, [Reflection.Emit.LocalBuilder]$Loc) {
     $idx = $Loc.LocalIndex
     switch ($idx) {
         0 { $IL.Emit([Reflection.Emit.OpCodes]::Stloc_0); return }
@@ -53,7 +53,7 @@ function Emit-StoreLoc([Reflection.Emit.ILGenerator]$IL, [Reflection.Emit.LocalB
     }
 }
 
-function Emit-Ldelem([Reflection.Emit.ILGenerator]$IL, [Type]$ElementType) {
+function Write-IlArrayLoad([Reflection.Emit.ILGenerator]$IL, [Type]$ElementType) {
     if ($ElementType -eq [int]) { $IL.Emit([Reflection.Emit.OpCodes]::Ldelem_I4); return }
     if ($ElementType -eq [single]) { $IL.Emit([Reflection.Emit.OpCodes]::Ldelem_R4); return }
     if ($ElementType -eq [double]) { $IL.Emit([Reflection.Emit.OpCodes]::Ldelem_R8); return }
@@ -67,7 +67,7 @@ function Emit-Ldelem([Reflection.Emit.ILGenerator]$IL, [Type]$ElementType) {
     $IL.Emit([Reflection.Emit.OpCodes]::Ldelem, $ElementType)
 }
 
-function Emit-Stelem([Reflection.Emit.ILGenerator]$IL, [Type]$ElementType) {
+function Write-IlArrayStore([Reflection.Emit.ILGenerator]$IL, [Type]$ElementType) {
     if ($ElementType -eq [int]) { $IL.Emit([Reflection.Emit.OpCodes]::Stelem_I4); return }
     if ($ElementType -eq [single]) { $IL.Emit([Reflection.Emit.OpCodes]::Stelem_R4); return }
     if ($ElementType -eq [double]) { $IL.Emit([Reflection.Emit.OpCodes]::Stelem_R8); return }
@@ -81,7 +81,7 @@ function Emit-Stelem([Reflection.Emit.ILGenerator]$IL, [Type]$ElementType) {
     $IL.Emit([Reflection.Emit.OpCodes]::Stelem, $ElementType)
 }
 
-function Emit-Constant {
+function Write-IlConstant {
     param(
         [Parameter(Mandatory)][Reflection.Emit.ILGenerator] $IL,
         [Parameter(Mandatory)][Linq.Expressions.ConstantExpression] $Expr
@@ -117,7 +117,7 @@ function Emit-Constant {
 
     if ($val -is [enum]) {
         $underlying = [Enum]::GetUnderlyingType($val.GetType())
-        Emit-Constant -IL $IL -Expr ([Linq.Expressions.Expression]::Constant([Convert]::ChangeType($val, $underlying), $underlying))
+        Write-IlConstant -IL $IL -Expr ([Linq.Expressions.Expression]::Constant([Convert]::ChangeType($val, $underlying), $underlying))
         return
     }
 
@@ -154,7 +154,7 @@ function Emit-Constant {
     throw "Unsupported constant type '$($val.GetType().FullName)'."
 }
 
-function Emit-Convert {
+function Write-IlConversion {
     param(
         [Parameter(Mandatory)][Reflection.Emit.ILGenerator] $IL,
         [Parameter(Mandatory)][Type] $FromType,
@@ -203,7 +203,7 @@ function Emit-Convert {
     throw "Unsupported conversion from '$($FromType.FullName)' to '$($ToType.FullName)'."
 }
 
-function Emit-ExpressionNode {
+function Write-IlExpression {
     param(
         [Parameter(Mandatory)][Reflection.Emit.ILGenerator] $IL,
         [Parameter(Mandatory)][Linq.Expressions.Expression] $Expr,
@@ -212,18 +212,18 @@ function Emit-ExpressionNode {
 
     # 1. Constant
     if ($Expr -is [Linq.Expressions.ConstantExpression]) {
-        Emit-Constant -IL $IL -Expr $Expr
+        Write-IlConstant -IL $IL -Expr $Expr
         return
     }
 
     # 2. Parameter / Local read
     if ($Expr -is [Linq.Expressions.ParameterExpression]) {
         if ($Context.Locals.ContainsKey($Expr)) {
-            Emit-LoadLoc -IL $IL -Loc $Context.Locals[$Expr]
+            Write-IlLocalLoad -IL $IL -Loc $Context.Locals[$Expr]
             return
         }
         if ($Context.Parameters.ContainsKey($Expr)) {
-            Emit-LoadArg -IL $IL -Index $Context.Parameters[$Expr]
+            Write-IlArgumentLoad -IL $IL -Index $Context.Parameters[$Expr]
             return
         }
         throw "Variable '$($Expr.Name)' was neither in parameters nor locals."
@@ -243,7 +243,7 @@ function Emit-ExpressionNode {
         for ($i = 0; $i -lt $count; $i++) {
             $child = $Expr.Expressions[$i]
             $isLast = ($i -eq ($count - 1))
-            Emit-ExpressionNode -IL $IL -Expr $child -Context $Context
+            Write-IlExpression -IL $IL -Expr $child -Context $Context
 
             # If not the last expression and pushes value onto stack, pop it
             if (-not $isLast -and $child.Type -ne [void] -and $child.NodeType -ne [Linq.Expressions.ExpressionType]::Assign) {
@@ -256,9 +256,9 @@ function Emit-ExpressionNode {
     # 4. Goto / Return
     if ($Expr -is [Linq.Expressions.GotoExpression]) {
         if ($Expr.Value) {
-            Emit-ExpressionNode -IL $IL -Expr $Expr.Value -Context $Context
+            Write-IlExpression -IL $IL -Expr $Expr.Value -Context $Context
             if ($Context.ReturnLocal -and $Expr.Target.Name -eq 'returnTarget') {
-                Emit-StoreLoc -IL $IL -Loc $Context.ReturnLocal
+                Write-IlLocalStore -IL $IL -Loc $Context.ReturnLocal
             }
         }
 
@@ -286,13 +286,13 @@ function Emit-ExpressionNode {
 
         if ($Expr.Target.Name -eq 'returnTarget') {
             if ($Context.ReturnLocal) {
-                Emit-LoadLoc -IL $IL -Loc $Context.ReturnLocal
+                Write-IlLocalLoad -IL $IL -Loc $Context.ReturnLocal
             }
             return
         }
 
         if ($Expr.DefaultValue) {
-            Emit-ExpressionNode -IL $IL -Expr $Expr.DefaultValue -Context $Context
+            Write-IlExpression -IL $IL -Expr $Expr.DefaultValue -Context $Context
         }
         return
     }
@@ -311,29 +311,29 @@ function Emit-ExpressionNode {
 
     # 7. Unary Convert
     if ($Expr -is [Linq.Expressions.UnaryExpression] -and $Expr.NodeType -in [Linq.Expressions.ExpressionType]::Convert, [Linq.Expressions.ExpressionType]::ConvertChecked) {
-        Emit-ExpressionNode -IL $IL -Expr $Expr.Operand -Context $Context
-        Emit-Convert -IL $IL -FromType $Expr.Operand.Type -ToType $Expr.Type -Checked:($Expr.NodeType -eq [Linq.Expressions.ExpressionType]::ConvertChecked)
+        Write-IlExpression -IL $IL -Expr $Expr.Operand -Context $Context
+        Write-IlConversion -IL $IL -FromType $Expr.Operand.Type -ToType $Expr.Type -Checked:($Expr.NodeType -eq [Linq.Expressions.ExpressionType]::ConvertChecked)
         return
     }
 
     # Checked negation: 0 - x with overflow checking, as CIL has no checked neg.
     if ($Expr -is [Linq.Expressions.UnaryExpression] -and $Expr.NodeType -eq [Linq.Expressions.ExpressionType]::NegateChecked) {
-        Emit-Constant -IL $IL -Expr ([Linq.Expressions.Expression]::Constant([Convert]::ChangeType(0, $Expr.Type), $Expr.Type))
-        Emit-ExpressionNode -IL $IL -Expr $Expr.Operand -Context $Context
+        Write-IlConstant -IL $IL -Expr ([Linq.Expressions.Expression]::Constant([Convert]::ChangeType(0, $Expr.Type), $Expr.Type))
+        Write-IlExpression -IL $IL -Expr $Expr.Operand -Context $Context
         $IL.Emit([Reflection.Emit.OpCodes]::Sub_Ovf)
         return
     }
 
     # 8. Unary Negate
     if ($Expr -is [Linq.Expressions.UnaryExpression] -and $Expr.NodeType -eq [Linq.Expressions.ExpressionType]::Negate) {
-        Emit-ExpressionNode -IL $IL -Expr $Expr.Operand -Context $Context
+        Write-IlExpression -IL $IL -Expr $Expr.Operand -Context $Context
         $IL.Emit([Reflection.Emit.OpCodes]::Neg)
         return
     }
 
     # 9. Unary Not
     if ($Expr -is [Linq.Expressions.UnaryExpression] -and $Expr.NodeType -eq [Linq.Expressions.ExpressionType]::Not) {
-        Emit-ExpressionNode -IL $IL -Expr $Expr.Operand -Context $Context
+        Write-IlExpression -IL $IL -Expr $Expr.Operand -Context $Context
         $IL.Emit([Reflection.Emit.OpCodes]::Ldc_I4_0)
         $IL.Emit([Reflection.Emit.OpCodes]::Ceq)
         return
@@ -341,7 +341,7 @@ function Emit-ExpressionNode {
 
     # 9.1 Unary ArrayLength
     if ($Expr -is [Linq.Expressions.UnaryExpression] -and $Expr.NodeType -eq [Linq.Expressions.ExpressionType]::ArrayLength) {
-        Emit-ExpressionNode -IL $IL -Expr $Expr.Operand -Context $Context
+        Write-IlExpression -IL $IL -Expr $Expr.Operand -Context $Context
         $IL.Emit([Reflection.Emit.OpCodes]::Ldlen)
         $IL.Emit([Reflection.Emit.OpCodes]::Conv_I4)
         return
@@ -350,7 +350,7 @@ function Emit-ExpressionNode {
     # 9.15 Unary Throw / Rethrow
     if ($Expr -is [Linq.Expressions.UnaryExpression] -and $Expr.NodeType -eq [Linq.Expressions.ExpressionType]::Throw) {
         if ($Expr.Operand) {
-            Emit-ExpressionNode -IL $IL -Expr $Expr.Operand -Context $Context
+            Write-IlExpression -IL $IL -Expr $Expr.Operand -Context $Context
             $IL.Emit([Reflection.Emit.OpCodes]::Throw)
         } else {
             $IL.Emit([Reflection.Emit.OpCodes]::Rethrow)
@@ -361,20 +361,20 @@ function Emit-ExpressionNode {
     # 9.2 NewArray (Bounds or Init)
     if ($Expr -is [Linq.Expressions.NewArrayExpression]) {
         if ($Expr.NodeType -eq [Linq.Expressions.ExpressionType]::NewArrayBounds) {
-            Emit-ExpressionNode -IL $IL -Expr $Expr.Expressions[0] -Context $Context
+            Write-IlExpression -IL $IL -Expr $Expr.Expressions[0] -Context $Context
             $IL.Emit([Reflection.Emit.OpCodes]::Newarr, $Expr.Type.GetElementType())
             return
         }
         if ($Expr.NodeType -eq [Linq.Expressions.ExpressionType]::NewArrayInit) {
             $elemType = $Expr.Type.GetElementType()
             $count = $Expr.Expressions.Count
-            Emit-Constant -IL $IL -Expr ([Linq.Expressions.Expression]::Constant($count, [int]))
+            Write-IlConstant -IL $IL -Expr ([Linq.Expressions.Expression]::Constant($count, [int]))
             $IL.Emit([Reflection.Emit.OpCodes]::Newarr, $elemType)
             for ($i = 0; $i -lt $count; $i++) {
                 $IL.Emit([Reflection.Emit.OpCodes]::Dup)
-                Emit-Constant -IL $IL -Expr ([Linq.Expressions.Expression]::Constant($i, [int]))
-                Emit-ExpressionNode -IL $IL -Expr $Expr.Expressions[$i] -Context $Context
-                Emit-Stelem -IL $IL -ElementType $elemType
+                Write-IlConstant -IL $IL -Expr ([Linq.Expressions.Expression]::Constant($i, [int]))
+                Write-IlExpression -IL $IL -Expr $Expr.Expressions[$i] -Context $Context
+                Write-IlArrayStore -IL $IL -ElementType $elemType
             }
             return
         }
@@ -383,7 +383,7 @@ function Emit-ExpressionNode {
     # 9.3 New object instantiation (NewExpression)
     if ($Expr -is [Linq.Expressions.NewExpression]) {
         foreach ($arg in $Expr.Arguments) {
-            Emit-ExpressionNode -IL $IL -Expr $arg -Context $Context
+            Write-IlExpression -IL $IL -Expr $arg -Context $Context
         }
         $IL.Emit([Reflection.Emit.OpCodes]::Newobj, $Expr.Constructor)
         return
@@ -392,10 +392,10 @@ function Emit-ExpressionNode {
     # 9.4 Method call (MethodCallExpression)
     if ($Expr -is [Linq.Expressions.MethodCallExpression]) {
         if ($Expr.Object) {
-            Emit-ExpressionNode -IL $IL -Expr $Expr.Object -Context $Context
+            Write-IlExpression -IL $IL -Expr $Expr.Object -Context $Context
         }
         foreach ($arg in $Expr.Arguments) {
-            Emit-ExpressionNode -IL $IL -Expr $arg -Context $Context
+            Write-IlExpression -IL $IL -Expr $arg -Context $Context
         }
         if ($Expr.Method.IsVirtual -and -not $Expr.Method.DeclaringType.IsValueType) {
             $IL.Emit([Reflection.Emit.OpCodes]::Callvirt, $Expr.Method)
@@ -410,7 +410,7 @@ function Emit-ExpressionNode {
         if ($Expr.Member -is [Reflection.PropertyInfo]) {
             $getter = $Expr.Member.GetGetMethod()
             if ($Expr.Expression) {
-                Emit-ExpressionNode -IL $IL -Expr $Expr.Expression -Context $Context
+                Write-IlExpression -IL $IL -Expr $Expr.Expression -Context $Context
             }
             if ($getter.IsVirtual -and -not $getter.DeclaringType.IsValueType) {
                 $IL.Emit([Reflection.Emit.OpCodes]::Callvirt, $getter)
@@ -424,11 +424,11 @@ function Emit-ExpressionNode {
             # value is the constant, as in LambdaCompiler.EmitMemberExpression.
             if ($Expr.Member.IsLiteral) {
                 $literalType = if ($Expr.Member.FieldType.IsEnum) { $Expr.Member.FieldType.GetEnumUnderlyingType() } else { $Expr.Member.FieldType }
-                Emit-Constant -IL $IL -Expr ([Linq.Expressions.Expression]::Constant($Expr.Member.GetRawConstantValue(), $literalType))
+                Write-IlConstant -IL $IL -Expr ([Linq.Expressions.Expression]::Constant($Expr.Member.GetRawConstantValue(), $literalType))
                 return
             }
             if ($Expr.Expression) {
-                Emit-ExpressionNode -IL $IL -Expr $Expr.Expression -Context $Context
+                Write-IlExpression -IL $IL -Expr $Expr.Expression -Context $Context
                 $IL.Emit([Reflection.Emit.OpCodes]::Ldfld, $Expr.Member)
             } else {
                 $IL.Emit([Reflection.Emit.OpCodes]::Ldsfld, $Expr.Member)
@@ -443,7 +443,7 @@ function Emit-ExpressionNode {
         $lblEnd = $IL.BeginExceptionBlock()
         $Context.ExceptionDepth++
 
-        Emit-ExpressionNode -IL $IL -Expr $Expr.Body -Context $Context
+        Write-IlExpression -IL $IL -Expr $Expr.Body -Context $Context
 
         foreach ($cb in $Expr.Handlers) {
             $IL.BeginCatchBlock($cb.Test)
@@ -452,16 +452,16 @@ function Emit-ExpressionNode {
                     $loc = $IL.DeclareLocal($cb.Variable.Type)
                     $Context.Locals[$cb.Variable] = $loc
                 }
-                Emit-StoreLoc -IL $IL -Loc $Context.Locals[$cb.Variable]
+                Write-IlLocalStore -IL $IL -Loc $Context.Locals[$cb.Variable]
             } else {
                 $IL.Emit([Reflection.Emit.OpCodes]::Pop)
             }
-            Emit-ExpressionNode -IL $IL -Expr $cb.Body -Context $Context
+            Write-IlExpression -IL $IL -Expr $cb.Body -Context $Context
         }
 
         if ($Expr.Finally) {
             $IL.BeginFinallyBlock()
-            Emit-ExpressionNode -IL $IL -Expr $Expr.Finally -Context $Context
+            Write-IlExpression -IL $IL -Expr $Expr.Finally -Context $Context
         }
 
         $IL.EndExceptionBlock()
@@ -471,12 +471,12 @@ function Emit-ExpressionNode {
 
     # 10. Conditional Expression (if/else or ternary)
     if ($Expr -is [Linq.Expressions.ConditionalExpression]) {
-        Emit-ExpressionNode -IL $IL -Expr $Expr.Test -Context $Context
+        Write-IlExpression -IL $IL -Expr $Expr.Test -Context $Context
         $lblFalse = $IL.DefineLabel()
         $lblEnd = $IL.DefineLabel()
 
         $IL.Emit([Reflection.Emit.OpCodes]::Brfalse, $lblFalse)
-        Emit-ExpressionNode -IL $IL -Expr $Expr.IfTrue -Context $Context
+        Write-IlExpression -IL $IL -Expr $Expr.IfTrue -Context $Context
 
         $hasFalseBranch = ($Expr.IfFalse -and $Expr.IfFalse.NodeType -ne [Linq.Expressions.ExpressionType]::Default -and $Expr.IfFalse.Type -ne [void]) -or
                           ($Expr.IfFalse -and $Expr.IfFalse.NodeType -ne [Linq.Expressions.ExpressionType]::Default)
@@ -484,7 +484,7 @@ function Emit-ExpressionNode {
         if ($hasFalseBranch) {
             $IL.Emit([Reflection.Emit.OpCodes]::Br, $lblEnd)
             $IL.MarkLabel($lblFalse)
-            Emit-ExpressionNode -IL $IL -Expr $Expr.IfFalse -Context $Context
+            Write-IlExpression -IL $IL -Expr $Expr.IfFalse -Context $Context
             $IL.MarkLabel($lblEnd)
         }
         else {
@@ -511,7 +511,7 @@ function Emit-ExpressionNode {
         } else { $lblHead }
 
         $IL.MarkLabel($lblHead)
-        Emit-ExpressionNode -IL $IL -Expr $Expr.Body -Context $Context
+        Write-IlExpression -IL $IL -Expr $Expr.Body -Context $Context
         $IL.Emit([Reflection.Emit.OpCodes]::Br, $lblHead)
         $IL.MarkLabel($lblBreak)
         return
@@ -522,21 +522,21 @@ function Emit-ExpressionNode {
         if ($Expr.NodeType -eq [Linq.Expressions.ExpressionType]::Assign) {
             if ($Expr.Left -is [Linq.Expressions.ParameterExpression]) {
                 # Evaluate right hand side
-                Emit-ExpressionNode -IL $IL -Expr $Expr.Right -Context $Context
+                Write-IlExpression -IL $IL -Expr $Expr.Right -Context $Context
                 if ($Context.Locals.ContainsKey($Expr.Left)) {
-                    Emit-StoreLoc -IL $IL -Loc $Context.Locals[$Expr.Left]
+                    Write-IlLocalStore -IL $IL -Loc $Context.Locals[$Expr.Left]
                     return
                 }
                 if ($Context.Parameters.ContainsKey($Expr.Left)) {
-                    Emit-StoreArg -IL $IL -Index $Context.Parameters[$Expr.Left]
+                    Write-IlArgumentStore -IL $IL -Index $Context.Parameters[$Expr.Left]
                     return
                 }
             }
             if ($Expr.Left -is [Linq.Expressions.IndexExpression]) {
-                Emit-ExpressionNode -IL $IL -Expr $Expr.Left.Object -Context $Context
-                Emit-ExpressionNode -IL $IL -Expr $Expr.Left.Arguments[0] -Context $Context
-                Emit-ExpressionNode -IL $IL -Expr $Expr.Right -Context $Context
-                Emit-Stelem -IL $IL -ElementType $Expr.Left.Type
+                Write-IlExpression -IL $IL -Expr $Expr.Left.Object -Context $Context
+                Write-IlExpression -IL $IL -Expr $Expr.Left.Arguments[0] -Context $Context
+                Write-IlExpression -IL $IL -Expr $Expr.Right -Context $Context
+                Write-IlArrayStore -IL $IL -ElementType $Expr.Left.Type
                 return
             }
             throw "Assignment to unsupported target expression '$($Expr.Left.GetType().FullName)'."
@@ -544,39 +544,39 @@ function Emit-ExpressionNode {
 
         # Array Index Read
         if ($Expr.NodeType -eq [Linq.Expressions.ExpressionType]::ArrayIndex) {
-            Emit-ExpressionNode -IL $IL -Expr $Expr.Left -Context $Context
-            Emit-ExpressionNode -IL $IL -Expr $Expr.Right -Context $Context
-            Emit-Ldelem -IL $IL -ElementType $Expr.Type
+            Write-IlExpression -IL $IL -Expr $Expr.Left -Context $Context
+            Write-IlExpression -IL $IL -Expr $Expr.Right -Context $Context
+            Write-IlArrayLoad -IL $IL -ElementType $Expr.Type
             return
         }
 
         # Short-circuit logical AndAlso
         if ($Expr.NodeType -eq [Linq.Expressions.ExpressionType]::AndAlso) {
-            Emit-ExpressionNode -IL $IL -Expr $Expr.Left -Context $Context
+            Write-IlExpression -IL $IL -Expr $Expr.Left -Context $Context
             $lbl = $IL.DefineLabel()
             $IL.Emit([Reflection.Emit.OpCodes]::Dup)
             $IL.Emit([Reflection.Emit.OpCodes]::Brfalse, $lbl)
             $IL.Emit([Reflection.Emit.OpCodes]::Pop)
-            Emit-ExpressionNode -IL $IL -Expr $Expr.Right -Context $Context
+            Write-IlExpression -IL $IL -Expr $Expr.Right -Context $Context
             $IL.MarkLabel($lbl)
             return
         }
 
         # Short-circuit logical OrElse
         if ($Expr.NodeType -eq [Linq.Expressions.ExpressionType]::OrElse) {
-            Emit-ExpressionNode -IL $IL -Expr $Expr.Left -Context $Context
+            Write-IlExpression -IL $IL -Expr $Expr.Left -Context $Context
             $lbl = $IL.DefineLabel()
             $IL.Emit([Reflection.Emit.OpCodes]::Dup)
             $IL.Emit([Reflection.Emit.OpCodes]::Brtrue, $lbl)
             $IL.Emit([Reflection.Emit.OpCodes]::Pop)
-            Emit-ExpressionNode -IL $IL -Expr $Expr.Right -Context $Context
+            Write-IlExpression -IL $IL -Expr $Expr.Right -Context $Context
             $IL.MarkLabel($lbl)
             return
         }
 
         # Binary operations (Arithmetic and Comparisons)
-        Emit-ExpressionNode -IL $IL -Expr $Expr.Left -Context $Context
-        Emit-ExpressionNode -IL $IL -Expr $Expr.Right -Context $Context
+        Write-IlExpression -IL $IL -Expr $Expr.Left -Context $Context
+        Write-IlExpression -IL $IL -Expr $Expr.Right -Context $Context
 
         if ($Expr.Method) {
             $IL.Emit([Reflection.Emit.OpCodes]::Call, $Expr.Method)
@@ -632,7 +632,7 @@ function Emit-ExpressionNode {
     throw "Emitter encountered unhandled expression node type '$($Expr.GetType().FullName)' ($($Expr.NodeType))."
 }
 
-function Emit-MethodBody {
+function Write-IlMethodBody {
     <#
     .SYNOPSIS
         Emits MSIL into a MethodBuilder from a validated LambdaExpression.
@@ -669,7 +669,7 @@ function Emit-MethodBody {
         ExceptionDepth = 0
     }
 
-    Emit-ExpressionNode -IL $il -Expr $Lambda.Body -Context $context
+    Write-IlExpression -IL $il -Expr $Lambda.Body -Context $context
 
     # Final method return
     $il.Emit([Reflection.Emit.OpCodes]::Ret)
