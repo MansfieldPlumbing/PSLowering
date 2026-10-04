@@ -23,7 +23,7 @@ function Get-LoweringCapability {
         PersistedAssemblyBuilder = $null -ne ([Type]::GetType('System.Reflection.Emit.PersistedAssemblyBuilder, System.Reflection.Emit'))
         EmitterEngine           = 'PowerShell.IlEmitter'
         SupportedModes          = @('ClrOnly')
-        SemanticContract        = 'CLR unchecked arithmetic, IEEE 754 floats, exact reflected member binding'
+        SemanticContract        = 'Typed PowerShell semantics: checked integral arithmetic, Double integral division, round-half-to-even integral conversion, invariant-culture string comparison, IEEE 754 floats, exact reflected member binding'
         DependencyContract      = 'Zero runtime SMA dependencies for ClrOnly output'
     }
 }

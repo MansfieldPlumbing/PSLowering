@@ -1,62 +1,104 @@
 # PSPersistence
 
-PSPersistence is a small research repository for preserving selected artifacts
-produced by PowerShell's real `System.Management.Automation` (SMA) compiler as
-reloadable .NET assemblies.
+PSPersistence compiles methods written as typed PowerShell classes into
+managed .NET assemblies, without C#, Roslyn or `Add-Type`. The compiler is
+itself written in PowerShell.
 
-The repository currently contains one narrow end-to-end persistence experiment
-and one independent observation probe. It is not a PowerShell compiler, a
-general script-to-DLL converter, or a supported production library.
+It compiles a declared typed subset of the language, not arbitrary scripts.
+Compiled methods run without PowerShell: the output's only assembly reference
+is `System.Private.CoreLib`.
 
-## What is demonstrated
+## How it works
 
-`experiments/Invoke-OneParameterPersistenceProof.ps1` demonstrates one specific
-boundary:
-
-1. Parse a PowerShell class through SMA.
-2. Ask SMA for the optimized expression tree of one typed instance method.
-3. Replace the method parameter's tuple access with a CLR parameter.
-4. Replace supported SMA dynamic-expression binders with persisted call sites.
-5. Emit the resulting method into a reloadable assembly.
-6. Reload the assembly and verify that the sample method returns `42`.
-
-`probes/Test-SmaCompilation.ps1` separately demonstrates that authentic SMA
-expression trees can be compiled and prepared by the runtime. It does not prove
-native-code persistence, native-code size, portability, or independence from
-PowerShell at run time.
-
-## Verified boundary
-
-The persistence experiment currently requires all of the following:
-
-- PowerShell running on a .NET version that provides
-  `System.Reflection.Emit.PersistedAssemblyBuilder`;
-- a PowerShell class with one typed, non-static method;
-- exactly one typed method parameter;
-- SMA's optimized compilation path;
-- an expression shape and SMA binder types handled by the experiment.
-
-Other methods, binders, control-flow shapes, constructors, static methods, and
-multiple parameters are not claimed to work.
-
-The experiment returns one structured result describing the emitted method,
-call-site rewrite, and output paths. The verification test owns the separate
-`AddOne(41) == 42` semantic assertion against the reloaded assembly.
-
-## Run the verification
-
-From the repository root:
+1. Parse the class with `System.Management.Automation`'s parser.
+2. Admit or reject each method (`src/Ast/AstValidator.ps1`). Commands,
+   pipelines, script blocks and expandable strings are rejected with their
+   source position.
+3. Lower each method to a `System.Linq.Expressions` tree with PowerShell's
+   meaning (`src/Ast/AstLoweringVisitor.ps1`).
+4. Write the IL with the compiler's own emitter through public
+   `System.Reflection.Emit` APIs (`src/Emitter/IlEmitter.ps1`).
+5. Save the assembly with `PersistedAssemblyBuilder` and a deterministic MVID
+   (`src/Packaging`).
 
 ```powershell
-pwsh -NoLogo -NoProfile -File ./tests/Test-OneParameterPersistence.ps1
-pwsh -NoLogo -NoProfile -File ./probes/Test-SmaCompilation.ps1 -BaselineOnly
+Import-Module ./src/PSPersistence.psd1
+Export-LoweredAssembly -SourcePath ./Contract.ps1 -ClassName Contract -OutputPath ./build/Contract.dll -Deterministic
+Get-LoweringCapability
 ```
 
-CI restores and runs the pinned PowerShell `7.6.6` .NET tool so the required
-runtime capability is explicit rather than inherited from the runner image.
+## Supported subset
 
-Generated assemblies and diagnostic expression-tree views are written beneath
-`build/`, which is ignored by Git.
+Exercised by the fixtures in `tests/fixtures`:
+
+- static and instance methods with zero or more typed parameters and typed
+  returns, including `[void]`;
+- constants, typed locals, assignment, increment and decrement;
+- arithmetic, comparison and Boolean operators on operands of the same type;
+- `if`/`elseif`/`else`, `while`, `for` and early `return`;
+- typed arrays: creation, literals, indexing, element assignment and
+  `Length`;
+- calls to .NET static and instance methods, properties and constructors,
+  bound by exact signature;
+- `throw` and `try`/`catch`/`finally`.
+
+`foreach`, `do`, `switch`, `break` and `continue` are rejected with their source
+position.
+
+## Semantics
+
+A compiled method returns what the same typed PowerShell method returns.
+`tests/oracle/PowerShellSourceOracle.ps1` checks this by running every
+fixture method as PowerShell and as compiled IL on the same inputs
+(`tests/oracle/OracleVectors.ps1`).
+
+- Integral `+`, `-`, `*`, `++`, `--` and negation throw `OverflowException` on
+  overflow. PowerShell widens the intermediate result and then fails
+  converting it back to the method's type, so both sides throw; the
+  exception types differ.
+- Integral `/` divides as `Double`: `7/2` is `3.5`, and `4` when returned as
+  `[int]`. Division by zero throws.
+- Conversion from floating point to an integral type rounds half to even and
+  throws when out of range or NaN. Integral narrowing throws on overflow.
+- String `-eq`, `-ne`, `-lt`, `-le`, `-gt` and `-ge` compare with the
+  invariant culture, ignoring case unless the operator is case-sensitive
+  (`-ceq` and so on).
+
+Known difference: an integral expression that overflows but is never stored
+in or returned as a typed value throws in compiled code, while PowerShell
+continues with a `Double`.
+
+## Verification
+
+```powershell
+pwsh -NoLogo -NoProfile -File ./tests/Test-ConsolidatedRunner.ps1
+```
+
+The runner executes 14 suites, each in its own process:
+
+- the SMA persistence baselines;
+- slices 1-9: signatures, arithmetic, comparisons, control flow, arrays,
+  .NET calls, exceptions and the Kokoro `VoiceRowIndex` consumer contract;
+- the LambdaCompiler oracle, which compiles the same expression trees with
+  the framework's compiler and compares results;
+- a fresh-process host that loads every compiled assembly without SMA;
+- the PowerShell source oracle.
+
+All 14 pass on PowerShell 7.7.0-preview.4 with .NET
+11.0.0-preview.6.26359.118. CI runs the pinned PowerShell 7.6.6 .NET tool.
+
+Generated assemblies are written beneath `build/`, which Git ignores.
+
+## The SMA persistence experiment
+
+`experiments/Invoke-OneParameterPersistenceProof.ps1` takes the other route:
+it asks SMA's own compiler for a method's expression tree, rewrites parameter
+access, persists SMA's dynamic call sites and saves the result. Its output
+keeps SMA's semantics and therefore depends on SMA at run time. It is kept as
+the baseline the compiler is compared with, verified by
+`tests/Test-OneParameterPersistence.ps1` and
+`tests/Test-TwoParameterPersistence.ps1`. It relies on private SMA
+implementation details that can change between releases.
 
 ## Related repositories
 
@@ -64,12 +106,6 @@ Generated assemblies and diagnostic expression-tree views are written beneath
   native Windows bindings from PowerShell.
 - [JS2PS](https://github.com/MansfieldPlumbing/JS2PS) contains JavaScript parsing
   and conformance research. It does not claim a finished converter.
-
-## Status
-
-Exploratory. Private SMA and expression-compiler implementation details can
-change between PowerShell and .NET releases. Passing verification describes the
-tested runtime and specimen only.
 
 ## License
 
