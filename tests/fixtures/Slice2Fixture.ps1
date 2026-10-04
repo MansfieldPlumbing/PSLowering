@@ -9,7 +9,7 @@ class Slice2Fixture {
         return $sum * $diff
     }
 
-    static [int] OverflowWrap([int] $a, [int] $b) {
+    static [int] OverflowAdd([int] $a, [int] $b) {
         return $a + $b
     }
 

@@ -44,11 +44,14 @@ if ($r1 -ne 42) { throw "AddTwo(15, 27) returned '$r1', expected 42" }
 $r2 = $type.GetMethod('Compute').Invoke($null, [object[]]@(10, 4))
 if ($r2 -ne 84) { throw "Compute(10, 4) returned '$r2', expected 84" }
 
-# OverflowWrap: must wrap to Int32.MinValue, proving CLR unchecked contract
-$r3 = $type.GetMethod('OverflowWrap').Invoke($null, [object[]]@([int]::MaxValue, 1))
-if ($r3 -ne [int]::MinValue -or $r3 -isnot [int]) {
-    throw "OverflowWrap returned '$r3' of type $($r3.GetType().FullName), expected $([int]::MinValue) of type System.Int32"
+# OverflowAdd: Int32 overflow must fail, as it does in a typed PowerShell method
+$overflowed = $false
+try { $null = $type.GetMethod('OverflowAdd').Invoke($null, [object[]]@([int]::MaxValue, 1)) }
+catch {
+    if ($_.Exception.GetBaseException() -isnot [OverflowException]) { throw "OverflowAdd threw $($_.Exception.GetBaseException().GetType().FullName), expected System.OverflowException" }
+    $overflowed = $true
 }
+if (-not $overflowed) { throw 'OverflowAdd returned a value for Int32.MaxValue + 1; expected System.OverflowException' }
 
 # Negate
 $r4 = $type.GetMethod('Negate').Invoke($null, [object[]]@(42))
@@ -71,7 +74,7 @@ $freshScript = @"
 `$type = `$asm.GetType('Slice2Fixture', `$true)
 if (`$type.GetMethod('AddTwo').Invoke(`$null, [object[]]@(15, 27)) -ne 42) { exit 1 }
 if (`$type.GetMethod('Compute').Invoke(`$null, [object[]]@(10, 4)) -ne 84) { exit 2 }
-if (`$type.GetMethod('OverflowWrap').Invoke(`$null, [object[]]@([int]::MaxValue, 1)) -ne [int]::MinValue) { exit 3 }
+try { `$null = `$type.GetMethod('OverflowAdd').Invoke(`$null, [object[]]@([int]::MaxValue, 1)); exit 3 } catch { if (`$_.Exception.GetBaseException() -isnot [OverflowException]) { exit 3 } }
 if (`$type.GetMethod('Negate').Invoke(`$null, [object[]]@(42)) -ne -42) { exit 4 }
 if (`$type.GetMethod('FloatMath').Invoke(`$null, [object[]]@(5.0, 4.0)) -ne 10.0) { exit 5 }
 `$inst = [Activator]::CreateInstance(`$type)

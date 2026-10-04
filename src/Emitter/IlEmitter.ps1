@@ -115,6 +115,12 @@ function Emit-Constant {
         return
     }
 
+    if ($val -is [enum]) {
+        $underlying = [Enum]::GetUnderlyingType($val.GetType())
+        Emit-Constant -IL $IL -Expr ([Linq.Expressions.Expression]::Constant([Convert]::ChangeType($val, $underlying), $underlying))
+        return
+    }
+
     if ($val -is [bool]) {
         if ($val) {
             $IL.Emit([Reflection.Emit.OpCodes]::Ldc_I4_1)
@@ -152,10 +158,23 @@ function Emit-Convert {
     param(
         [Parameter(Mandatory)][Reflection.Emit.ILGenerator] $IL,
         [Parameter(Mandatory)][Type] $FromType,
-        [Parameter(Mandatory)][Type] $ToType
+        [Parameter(Mandatory)][Type] $ToType,
+        [switch] $Checked
     )
 
     if ($FromType -eq $ToType) { return }
+
+    if ($Checked -and $ToType.IsPrimitive -and $ToType -notin [double], [single], [bool], [char]) {
+        $un = if ($FromType -in [byte], [ushort], [uint], [ulong]) { '_Un' } else { '' }
+        $suffix = @{ [int] = 'I4'; [long] = 'I8'; [short] = 'I2'; [sbyte] = 'I1'; [byte] = 'U1'; [ushort] = 'U2'; [uint] = 'U4'; [ulong] = 'U8' }[$ToType]
+        if ($suffix) {
+            $IL.Emit([Reflection.Emit.OpCodes].GetField("Conv_Ovf_$suffix$un").GetValue($null))
+            return
+        }
+    }
+    if ($ToType -in [double], [single] -and $FromType -in [uint], [ulong]) {
+        $IL.Emit([Reflection.Emit.OpCodes]::Conv_R_Un)
+    }
 
     if ($ToType -eq [int])    { $IL.Emit([Reflection.Emit.OpCodes]::Conv_I4); return }
     if ($ToType -eq [long])   { $IL.Emit([Reflection.Emit.OpCodes]::Conv_I8); return }
@@ -291,9 +310,17 @@ function Emit-ExpressionNode {
     }
 
     # 7. Unary Convert
-    if ($Expr -is [Linq.Expressions.UnaryExpression] -and $Expr.NodeType -eq [Linq.Expressions.ExpressionType]::Convert) {
+    if ($Expr -is [Linq.Expressions.UnaryExpression] -and $Expr.NodeType -in [Linq.Expressions.ExpressionType]::Convert, [Linq.Expressions.ExpressionType]::ConvertChecked) {
         Emit-ExpressionNode -IL $IL -Expr $Expr.Operand -Context $Context
-        Emit-Convert -IL $IL -FromType $Expr.Operand.Type -ToType $Expr.Type
+        Emit-Convert -IL $IL -FromType $Expr.Operand.Type -ToType $Expr.Type -Checked:($Expr.NodeType -eq [Linq.Expressions.ExpressionType]::ConvertChecked)
+        return
+    }
+
+    # Checked negation: 0 - x with overflow checking, as CIL has no checked neg.
+    if ($Expr -is [Linq.Expressions.UnaryExpression] -and $Expr.NodeType -eq [Linq.Expressions.ExpressionType]::NegateChecked) {
+        Emit-Constant -IL $IL -Expr ([Linq.Expressions.Expression]::Constant([Convert]::ChangeType(0, $Expr.Type), $Expr.Type))
+        Emit-ExpressionNode -IL $IL -Expr $Expr.Operand -Context $Context
+        $IL.Emit([Reflection.Emit.OpCodes]::Sub_Ovf)
         return
     }
 
@@ -550,13 +577,19 @@ function Emit-ExpressionNode {
         }
 
         $isFloat = ($Expr.Left.Type -eq [double] -or $Expr.Left.Type -eq [single])
+        # Unsigned operands need the _Un forms; for floats, the _Un compare
+        # forms are the ones that treat NaN as unordered.
+        $isUnsigned = $Expr.Left.Type -in [byte], [ushort], [uint], [ulong]
 
         switch ($Expr.NodeType) {
             'Add'      { $IL.Emit([Reflection.Emit.OpCodes]::Add); return }
             'Subtract' { $IL.Emit([Reflection.Emit.OpCodes]::Sub); return }
             'Multiply' { $IL.Emit([Reflection.Emit.OpCodes]::Mul); return }
-            'Divide'   { $IL.Emit([Reflection.Emit.OpCodes]::Div); return }
-            'Modulo'   { $IL.Emit([Reflection.Emit.OpCodes]::Rem); return }
+            'AddChecked'      { $IL.Emit($(if ($isUnsigned) { [Reflection.Emit.OpCodes]::Add_Ovf_Un } else { [Reflection.Emit.OpCodes]::Add_Ovf })); return }
+            'SubtractChecked' { $IL.Emit($(if ($isUnsigned) { [Reflection.Emit.OpCodes]::Sub_Ovf_Un } else { [Reflection.Emit.OpCodes]::Sub_Ovf })); return }
+            'MultiplyChecked' { $IL.Emit($(if ($isUnsigned) { [Reflection.Emit.OpCodes]::Mul_Ovf_Un } else { [Reflection.Emit.OpCodes]::Mul_Ovf })); return }
+            'Divide'   { $IL.Emit($(if ($isUnsigned) { [Reflection.Emit.OpCodes]::Div_Un } else { [Reflection.Emit.OpCodes]::Div })); return }
+            'Modulo'   { $IL.Emit($(if ($isUnsigned) { [Reflection.Emit.OpCodes]::Rem_Un } else { [Reflection.Emit.OpCodes]::Rem })); return }
             'Equal'    { $IL.Emit([Reflection.Emit.OpCodes]::Ceq); return }
             'NotEqual' {
                 $IL.Emit([Reflection.Emit.OpCodes]::Ceq)
@@ -564,10 +597,10 @@ function Emit-ExpressionNode {
                 $IL.Emit([Reflection.Emit.OpCodes]::Ceq)
                 return
             }
-            'LessThan' { $IL.Emit([Reflection.Emit.OpCodes]::Clt); return }
-            'GreaterThan' { $IL.Emit([Reflection.Emit.OpCodes]::Cgt); return }
+            'LessThan' { $IL.Emit($(if ($isUnsigned) { [Reflection.Emit.OpCodes]::Clt_Un } else { [Reflection.Emit.OpCodes]::Clt })); return }
+            'GreaterThan' { $IL.Emit($(if ($isUnsigned) { [Reflection.Emit.OpCodes]::Cgt_Un } else { [Reflection.Emit.OpCodes]::Cgt })); return }
             'LessThanOrEqual' {
-                if ($isFloat) {
+                if ($isFloat -or $isUnsigned) {
                     $IL.Emit([Reflection.Emit.OpCodes]::Cgt_Un)
                 } else {
                     $IL.Emit([Reflection.Emit.OpCodes]::Cgt)
@@ -577,7 +610,7 @@ function Emit-ExpressionNode {
                 return
             }
             'GreaterThanOrEqual' {
-                if ($isFloat) {
+                if ($isFloat -or $isUnsigned) {
                     $IL.Emit([Reflection.Emit.OpCodes]::Clt_Un)
                 } else {
                     $IL.Emit([Reflection.Emit.OpCodes]::Clt)

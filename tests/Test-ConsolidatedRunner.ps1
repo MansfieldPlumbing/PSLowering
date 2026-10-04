@@ -21,6 +21,7 @@ if (-not (Test-Path $buildDir)) {
 
 $testSuites = @(
     @{ Name = 'Baseline: Authentic-SMA Persistence Proof'; Path = 'tests/Test-OneParameterPersistence.ps1'; Args = @() }
+    @{ Name = 'Baseline: Two-Parameter SMA Persistence';    Path = 'tests/Test-TwoParameterPersistence.ps1'; Args = @() }
     @{ Name = 'Baseline: Authentic-SMA Compiler Probe';   Path = 'probes/Test-SmaCompilation.ps1';           Args = @('-BaselineOnly') }
     @{ Name = 'Slice 1: Basic Signatures & Constants';     Path = 'tests/Test-Slice1.ps1';                  Args = @() }
     @{ Name = 'Slices 2-3: Params, Locals, Arithmetic';    Path = 'tests/Test-Slice2.ps1';                  Args = @() }
@@ -32,6 +33,7 @@ $testSuites = @(
     @{ Name = 'Slice 9: Kokoro VoiceRowIndex Contract';    Path = 'tests/Test-Slice9.ps1';                  Args = @() }
     @{ Name = 'Slice 10: Microsoft LambdaCompiler Oracle'; Path = 'tests/oracle/MicrosoftLambdaCompilerOracle.ps1'; Args = @() }
     @{ Name = 'Slice 11: Fresh Zero-SMA Host Smoke Test';  Path = 'tests/Test-ZeroSmaHost.ps1';             Args = @() }
+    @{ Name = 'Slice 12: PowerShell Source Oracle';        Path = 'tests/oracle/PowerShellSourceOracle.ps1'; Args = @() }
 )
 
 Write-Host "================================================================================" -ForegroundColor Cyan

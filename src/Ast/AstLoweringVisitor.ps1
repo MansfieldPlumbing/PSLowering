@@ -9,6 +9,92 @@ $script:ExpressionNewMethod = [Linq.Expressions.Expression].GetMethod(
     [Type[]]@([Reflection.ConstructorInfo], [System.Collections.Generic.IEnumerable[Linq.Expressions.Expression]])
 )
 
+# PowerShell's numeric semantics, expressed with CLR operations only. The
+# PowerShell source oracle (tests/oracle/PowerShellSourceOracle.ps1) checks
+# every rule here against PowerShell itself.
+$script:IntegralTypes = [Type[]]@([int], [long], [short], [sbyte], [byte], [ushort], [uint], [ulong])
+$script:FloatingTypes = [Type[]]@([double], [single])
+
+function ConvertTo-PowerShellType {
+    <#
+    .SYNOPSIS
+        Converts an expression to a type the way a PowerShell typed assignment,
+        cast, argument or return does.
+    .DESCRIPTION
+        Floating to integral rounds half to even and throws OverflowException
+        when out of range or NaN (System.Convert, as PowerShell's numeric
+        conversion does). Integral narrowing throws on overflow. Other
+        conversions are plain CLR conversions.
+    #>
+    param(
+        [Parameter(Mandatory)][Linq.Expressions.Expression] $Expression,
+        [Parameter(Mandatory)][Type] $Type
+    )
+    $from = $Expression.Type
+    if ($from -eq $Type) { return $Expression }
+    if ($from -in $script:FloatingTypes -and $Type -in $script:IntegralTypes) {
+        $convert = [Convert].GetMethod("To$($Type.Name)", [Type[]]@($from))
+        return [Linq.Expressions.Expression]::Call($convert, $Expression)
+    }
+    if ($from -in $script:IntegralTypes -and $Type -in $script:IntegralTypes) {
+        return [Linq.Expressions.Expression]::ConvertChecked($Expression, $Type)
+    }
+    [Linq.Expressions.Expression]::Convert($Expression, $Type)
+}
+
+function New-PowerShellStringComparison {
+    <#
+    .SYNOPSIS
+        Compares two strings as PowerShell's comparison operators do: through
+        the invariant culture's CompareInfo, ignoring case unless the operator
+        is case-sensitive (SMA LanguagePrimitives.Equals and Compare).
+    #>
+    param(
+        [Parameter(Mandatory)][Linq.Expressions.Expression] $Left,
+        [Parameter(Mandatory)][Linq.Expressions.Expression] $Right,
+        [Parameter(Mandatory)][bool] $CaseSensitive
+    )
+    $culture = [Linq.Expressions.Expression]::Property($null, [Globalization.CultureInfo].GetProperty('InvariantCulture'))
+    $compareInfo = [Linq.Expressions.Expression]::Property($culture, 'CompareInfo')
+    $compare = [Globalization.CompareInfo].GetMethod('Compare', [Type[]]@([string], [string], [Globalization.CompareOptions]))
+    $options = if ($CaseSensitive) { [Globalization.CompareOptions]::None } else { [Globalization.CompareOptions]::IgnoreCase }
+    [Linq.Expressions.Expression]::Call($compareInfo, $compare, $Left, $Right,
+        [Linq.Expressions.Expression]::Constant($options, [Globalization.CompareOptions]))
+}
+
+function New-PowerShellArithmetic {
+    <#
+    .SYNOPSIS
+        Integral +, -, * fail on overflow where PowerShell would leave the
+        type (in a typed method PowerShell then fails converting back).
+        Integral / divides as Double, as PowerShell does, after failing on a
+        zero divisor. Floating arithmetic is plain IEEE 754.
+    #>
+    param(
+        [Parameter(Mandatory)][string] $Operator,
+        [Parameter(Mandatory)][Linq.Expressions.Expression] $Left,
+        [Parameter(Mandatory)][Linq.Expressions.Expression] $Right
+    )
+    $integral = $Left.Type -in $script:IntegralTypes
+    switch ($Operator) {
+        'Plus'     { if ($integral) { return [Linq.Expressions.Expression]::AddChecked($Left, $Right) }; return [Linq.Expressions.Expression]::Add($Left, $Right) }
+        'Minus'    { if ($integral) { return [Linq.Expressions.Expression]::SubtractChecked($Left, $Right) }; return [Linq.Expressions.Expression]::Subtract($Left, $Right) }
+        'Multiply' { if ($integral) { return [Linq.Expressions.Expression]::MultiplyChecked($Left, $Right) }; return [Linq.Expressions.Expression]::Multiply($Left, $Right) }
+        'Rem'      { return [Linq.Expressions.Expression]::Modulo($Left, $Right) }
+        'Divide' {
+            if (-not $integral) { return [Linq.Expressions.Expression]::Divide($Left, $Right) }
+            $zero = [Linq.Expressions.Expression]::Constant([Convert]::ChangeType(0, $Right.Type), $Right.Type)
+            $throw = [Linq.Expressions.Expression]::Throw(
+                $script:ExpressionNewMethod.Invoke($null, [object[]]@([DivideByZeroException].GetConstructor([Type[]]@()), [Linq.Expressions.Expression[]]@())), [double])
+            $quotient = [Linq.Expressions.Expression]::Divide(
+                [Linq.Expressions.Expression]::Convert($Left, [double]),
+                [Linq.Expressions.Expression]::Convert($Right, [double]))
+            return [Linq.Expressions.Expression]::Condition(
+                [Linq.Expressions.Expression]::Equal($Right, $zero), $throw, $quotient)
+        }
+    }
+}
+
 function Parse-PowerShellClass {
     <#
     .SYNOPSIS
@@ -246,7 +332,7 @@ function Get-AstArrayElements($node) {
                 foreach ($el in $elements) {
                     $itemExpr = Convert-AstExpression -Node $el -Scope $Scope
                     if ($itemExpr.Type -ne $elemType) {
-                        $itemExpr = [Linq.Expressions.Expression]::Convert($itemExpr, $elemType)
+                        $itemExpr = (ConvertTo-PowerShellType -Expression $itemExpr -Type ($elemType))
                     }
                     $elemExprList.Add($itemExpr)
                 }
@@ -254,7 +340,7 @@ function Get-AstArrayElements($node) {
             }
         }
         $child = Convert-AstExpression -Node $Node.Child -Scope $Scope
-        return [Linq.Expressions.Expression]::Convert($child, $targetType)
+        return (ConvertTo-PowerShellType -Expression $child -Type ($targetType))
     }
 
     # 7. Unary arithmetic expressions: -$x, ++$x, --$x, $x++, $x--
@@ -263,15 +349,18 @@ function Get-AstArrayElements($node) {
             $target = Convert-AstExpression -Node $Node.Child -Scope $Scope
             $one = [Linq.Expressions.Expression]::Constant(1, $target.Type)
             if ($Node.TokenKind -in 'PostfixPlusPlus', 'PrefixPlusPlus') {
-                return [Linq.Expressions.Expression]::Assign($target, [Linq.Expressions.Expression]::Add($target, $one))
+                return [Linq.Expressions.Expression]::Assign($target, (New-PowerShellArithmetic -Operator Plus -Left $target -Right $one))
             } else {
-                return [Linq.Expressions.Expression]::Assign($target, [Linq.Expressions.Expression]::Subtract($target, $one))
+                return [Linq.Expressions.Expression]::Assign($target, (New-PowerShellArithmetic -Operator Minus -Left $target -Right $one))
             }
         }
 
         $operand = Convert-AstExpression -Node $Node.Child -Scope $Scope
         switch ($Node.TokenKind) {
-            'Minus'   { return [Linq.Expressions.Expression]::Negate($operand) }
+            'Minus'   {
+                if ($operand.Type -in $script:IntegralTypes) { return [Linq.Expressions.Expression]::NegateChecked($operand) }
+                return [Linq.Expressions.Expression]::Negate($operand)
+            }
             'Plus'    { return $operand }
             'Not'     { return [Linq.Expressions.Expression]::Not($operand) }
             'Exclaim' { return [Linq.Expressions.Expression]::Not($operand) }
@@ -292,12 +381,21 @@ function Get-AstArrayElements($node) {
                 $Node.Extent.StartLineNumber, $Node.Extent.StartColumnNumber, $Node.Operator, $left.Type.FullName, $right.Type.FullName
         }
 
+        if ($left.Type -eq [string] -and $Node.Operator -match '^[IC](eq|ne|lt|le|gt|ge)$') {
+            $compared = New-PowerShellStringComparison -Left $left -Right $right -CaseSensitive ([string]$Node.Operator).StartsWith('C', [StringComparison]::Ordinal)
+            $zero = [Linq.Expressions.Expression]::Constant(0)
+            switch -Regex ($Node.Operator) {
+                'eq$' { return [Linq.Expressions.Expression]::Equal($compared, $zero) }
+                'ne$' { return [Linq.Expressions.Expression]::NotEqual($compared, $zero) }
+                'lt$' { return [Linq.Expressions.Expression]::LessThan($compared, $zero) }
+                'le$' { return [Linq.Expressions.Expression]::LessThanOrEqual($compared, $zero) }
+                'gt$' { return [Linq.Expressions.Expression]::GreaterThan($compared, $zero) }
+                'ge$' { return [Linq.Expressions.Expression]::GreaterThanOrEqual($compared, $zero) }
+            }
+        }
+
         switch ($Node.Operator) {
-            'Plus'     { return [Linq.Expressions.Expression]::Add($left, $right) }
-            'Minus'    { return [Linq.Expressions.Expression]::Subtract($left, $right) }
-            'Multiply' { return [Linq.Expressions.Expression]::Multiply($left, $right) }
-            'Divide'   { return [Linq.Expressions.Expression]::Divide($left, $right) }
-            'Rem'      { return [Linq.Expressions.Expression]::Modulo($left, $right) }
+            { $_ -in 'Plus', 'Minus', 'Multiply', 'Divide', 'Rem' } { return New-PowerShellArithmetic -Operator $Node.Operator -Left $left -Right $right }
             { $_ -in 'Ieq', 'Ceq' } { return [Linq.Expressions.Expression]::Equal($left, $right) }
             { $_ -in 'Ine', 'Cne' } { return [Linq.Expressions.Expression]::NotEqual($left, $right) }
             { $_ -in 'Ilt', 'Clt' } { return [Linq.Expressions.Expression]::LessThan($left, $right) }
@@ -319,7 +417,7 @@ function Get-AstArrayElements($node) {
         $idxExpr = Convert-AstExpression -Node $Node.Index -Scope $Scope
         if ($targetExpr.Type.IsArray) {
             if ($idxExpr.Type -ne [int]) {
-                $idxExpr = [Linq.Expressions.Expression]::Convert($idxExpr, [int])
+                $idxExpr = (ConvertTo-PowerShellType -Expression $idxExpr -Type ([int]))
             }
             return [Linq.Expressions.Expression]::ArrayIndex($targetExpr, $idxExpr)
         }
@@ -359,7 +457,7 @@ function Get-AstArrayElements($node) {
                 }
                 $lenExpr = $argExprs[0]
                 if ($lenExpr.Type -ne [int]) {
-                    $lenExpr = [Linq.Expressions.Expression]::Convert($lenExpr, [int])
+                    $lenExpr = (ConvertTo-PowerShellType -Expression $lenExpr -Type ([int]))
                 }
                 return [Linq.Expressions.Expression]::NewArrayBounds($targetType.GetElementType(), $lenExpr)
             }
@@ -370,7 +468,7 @@ function Get-AstArrayElements($node) {
                 $params = $ctor.GetParameters()
                 for ($i = 0; $i -lt $params.Length; $i++) {
                     if ($argExprs[$i].Type -ne $params[$i].ParameterType) {
-                        $argExprs[$i] = [Linq.Expressions.Expression]::Convert($argExprs[$i], $params[$i].ParameterType)
+                        $argExprs[$i] = (ConvertTo-PowerShellType -Expression $argExprs[$i] -Type ($params[$i].ParameterType))
                     }
                 }
                 return $script:ExpressionNewMethod.Invoke($null, @($ctor, [Linq.Expressions.Expression[]]$argExprs.ToArray()))
@@ -381,7 +479,7 @@ function Get-AstArrayElements($node) {
             $params = $method.GetParameters()
             for ($i = 0; $i -lt $params.Length; $i++) {
                 if ($argExprs[$i].Type -ne $params[$i].ParameterType) {
-                    $argExprs[$i] = [Linq.Expressions.Expression]::Convert($argExprs[$i], $params[$i].ParameterType)
+                    $argExprs[$i] = (ConvertTo-PowerShellType -Expression $argExprs[$i] -Type ($params[$i].ParameterType))
                 }
             }
             return [Linq.Expressions.Expression]::Call($method, [Linq.Expressions.Expression[]]$argExprs.ToArray())
@@ -393,7 +491,7 @@ function Get-AstArrayElements($node) {
             $params = $method.GetParameters()
             for ($i = 0; $i -lt $params.Length; $i++) {
                 if ($argExprs[$i].Type -ne $params[$i].ParameterType) {
-                    $argExprs[$i] = [Linq.Expressions.Expression]::Convert($argExprs[$i], $params[$i].ParameterType)
+                    $argExprs[$i] = (ConvertTo-PowerShellType -Expression $argExprs[$i] -Type ($params[$i].ParameterType))
                 }
             }
             return [Linq.Expressions.Expression]::Call($targetExpr, $method, [Linq.Expressions.Expression[]]$argExprs.ToArray())
@@ -468,12 +566,12 @@ function Convert-AstStatement {
                     $Statement.Extent.StartLineNumber, $Statement.Extent.StartColumnNumber, $targetExpr.Type.FullName
             }
             if ($idxExpr.Type -ne [int]) {
-                $idxExpr = [Linq.Expressions.Expression]::Convert($idxExpr, [int])
+                $idxExpr = (ConvertTo-PowerShellType -Expression $idxExpr -Type ([int]))
             }
             $elemType = $targetExpr.Type.GetElementType()
             $valExpr = Convert-AstExpression -Node $Statement.Right -Scope $Scope
             if ($valExpr.Type -ne $elemType) {
-                $valExpr = [Linq.Expressions.Expression]::Convert($valExpr, $elemType)
+                $valExpr = (ConvertTo-PowerShellType -Expression $valExpr -Type ($elemType))
             }
             $arrayAccess = [Linq.Expressions.Expression]::ArrayAccess($targetExpr, $idxExpr)
             return [Linq.Expressions.Expression]::Assign($arrayAccess, $valExpr)
@@ -498,7 +596,7 @@ function Convert-AstStatement {
         $valExpr = Convert-AstExpression -Node $Statement.Right -Scope $Scope
 
         if ($explicitType -and $valExpr.Type -ne $explicitType) {
-            $valExpr = [Linq.Expressions.Expression]::Convert($valExpr, $explicitType)
+            $valExpr = (ConvertTo-PowerShellType -Expression $valExpr -Type ($explicitType))
         }
 
         $targetVar = $null
@@ -516,7 +614,7 @@ function Convert-AstStatement {
         }
 
         if ($valExpr.Type -ne $targetVar.Type) {
-            $valExpr = [Linq.Expressions.Expression]::Convert($valExpr, $targetVar.Type)
+            $valExpr = (ConvertTo-PowerShellType -Expression $valExpr -Type ($targetVar.Type))
         }
 
         return [Linq.Expressions.Expression]::Assign($targetVar, $valExpr)
@@ -535,7 +633,7 @@ function Convert-AstStatement {
 
         $retVal = Convert-AstExpression -Node $Statement.Pipeline -Scope $Scope
         if ($retVal.Type -ne $Scope.ReturnType) {
-            $retVal = [Linq.Expressions.Expression]::Convert($retVal, $Scope.ReturnType)
+            $retVal = (ConvertTo-PowerShellType -Expression $retVal -Type ($Scope.ReturnType))
         }
 
         return [Linq.Expressions.Expression]::Return($Scope.ReturnTarget, $retVal)

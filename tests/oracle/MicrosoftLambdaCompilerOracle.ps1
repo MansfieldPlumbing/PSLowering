@@ -109,7 +109,7 @@ Test-OracleMethodParity -FixturePath $fix2 -ClassName 'Slice2Fixture' -MethodNam
     [object[]]@(100, 1)
 )
 
-Test-OracleMethodParity -FixturePath $fix2 -ClassName 'Slice2Fixture' -MethodName 'OverflowWrap' -TestInputs @(
+Test-OracleMethodParity -FixturePath $fix2 -ClassName 'Slice2Fixture' -MethodName 'OverflowAdd' -TestInputs @(
     [object[]]@([int]::MaxValue, 1),
     [object[]]@([int]::MinValue, -1)
 )

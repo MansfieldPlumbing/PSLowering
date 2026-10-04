@@ -36,4 +36,8 @@ class SemanticsFixture {
     static [bool] StringNotEqual([string] $a, [string] $b) {
         return $a -ne $b
     }
+
+    static [bool] StringLess([string] $a, [string] $b) {
+        return $a -lt $b
+    }
 }
