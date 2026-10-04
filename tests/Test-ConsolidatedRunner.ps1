@@ -33,7 +33,7 @@ $testSuites = @(
 )
 
 Write-Host "================================================================================" -ForegroundColor Cyan
-Write-Host " PSPersistence Consolidated Verification Suite" -ForegroundColor Cyan
+Write-Host " PSLowering Consolidated Verification Suite" -ForegroundColor Cyan
 Write-Host " PowerShell: $($pwshCommand -join ' ')" -ForegroundColor Cyan
 Write-Host " Runtime:    $([Runtime.InteropServices.RuntimeInformation]::FrameworkDescription)" -ForegroundColor Cyan
 Write-Host " OS:         $([Runtime.InteropServices.RuntimeInformation]::OSDescription)" -ForegroundColor Cyan

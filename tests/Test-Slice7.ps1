@@ -5,7 +5,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $repoRoot = Split-Path $PSScriptRoot -Parent
-$modulePath = Join-Path $repoRoot 'src/PSPersistence.psd1'
+$modulePath = Join-Path $repoRoot 'src/Dev.MansfieldPlumbing.PowerShell.Lowering.psd1'
 Import-Module $modulePath -Force
 
 $fixturePath = Join-Path $PSScriptRoot 'fixtures/Slice7Fixture.ps1'

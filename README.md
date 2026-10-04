@@ -1,6 +1,6 @@
-# PSPersistence
+# PSLowering
 
-PSPersistence compiles methods written as typed PowerShell classes into
+PSLowering compiles methods written as typed PowerShell classes into
 managed .NET assemblies, without C#, Roslyn or `Add-Type`. The compiler is
 itself written in PowerShell.
 
@@ -22,7 +22,7 @@ is `System.Private.CoreLib`.
    (`src/Packaging`).
 
 ```powershell
-Import-Module ./src/PSPersistence.psd1
+Import-Module ./src/Dev.MansfieldPlumbing.PowerShell.Lowering.psd1
 Export-LoweredAssembly -SourcePath ./Contract.ps1 -ClassName Contract -OutputPath ./build/Contract.dll -Deterministic
 Get-LoweringCapability
 ```

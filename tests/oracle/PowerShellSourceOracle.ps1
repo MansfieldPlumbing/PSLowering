@@ -17,7 +17,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $repoRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
-Import-Module (Join-Path $repoRoot 'src/PSPersistence.psd1') -Force
+Import-Module (Join-Path $repoRoot 'src/Dev.MansfieldPlumbing.PowerShell.Lowering.psd1') -Force
 $fixtureRoot = Join-Path $repoRoot 'tests/fixtures'
 $outDir = Join-Path $repoRoot 'build/source-oracle'
 $null = New-Item -ItemType Directory -Force -Path $outDir

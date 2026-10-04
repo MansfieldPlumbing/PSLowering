@@ -17,7 +17,7 @@ function Get-LoweringCapability {
     param()
 
     [pscustomobject]@{
-        Product                 = 'PSPersistence.Lowering'
+        Product                 = 'Dev.MansfieldPlumbing.PowerShell.Lowering'
         PowerShellVersion       = $PSVersionTable.PSVersion.ToString()
         RuntimeVersion          = [Runtime.InteropServices.RuntimeInformation]::FrameworkDescription
         PersistedAssemblyBuilder = $null -ne ([Type]::GetType('System.Reflection.Emit.PersistedAssemblyBuilder, System.Reflection.Emit'))

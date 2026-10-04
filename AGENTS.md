@@ -1,4 +1,4 @@
-# PSPersistence repository contract
+# PSLowering repository contract
 
 Keep this repository narrow and evidence-led.
 
