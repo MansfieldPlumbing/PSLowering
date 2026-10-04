@@ -12,22 +12,15 @@ jobs:
     runs-on: windows-latest
     steps:
       - name: Check out repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Install .NET 10 SDK
-        uses: actions/setup-dotnet@v6
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
         with:
           dotnet-version: 10.0.x
 
       - name: Restore pinned PowerShell
         run: dotnet tool restore
 
-      - name: Verify persistence
-        run: dotnet tool run pwsh -- -NoLogo -NoProfile -File ./tests/Test-OneParameterPersistence.ps1
-
-      - name: Verify SMA compilation
-        run: dotnet tool run pwsh -- -NoLogo -NoProfile -File ./probes/Test-SmaCompilation.ps1 -BaselineOnly
-
-      - name: Verify lowering toolchain
+      - name: Verify the compiler, its oracles and the SMA baselines
         run: dotnet tool run pwsh -- -NoLogo -NoProfile -File ./tests/Test-ConsolidatedRunner.ps1
-
