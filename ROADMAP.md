@@ -68,23 +68,37 @@ compiled code; script blocks as values; dynamic member access.
 ## Phase 1: unblock the consumers
 
 ### 1.1 Kokoro consumer template and handoff
-Why: Kokoro's tone session (`tools/Build-HexagonTone.ps1` in Kokoro-Hexagon)
-builds its managed session by hand with expression trees and the private
-LambdaCompiler helper from Pwsh's `setup.ps1`; its builds stop at that helper.
+Why: Kokoro-Hexagon (`9f3d2e37`) binds its native calls through delegates
+invoked with `DynamicInvoke` (`src/runspace/Audio.AAudio.psm1`,
+`FastRpcProbe.ps1`, `FastRpcDirectIoctlProbe.ps1`); compiled P/Invoke methods
+replace that per-call reflection.
 Done when:
 - `tests/fixtures/KokoroToneSessionFixture.ps1` expresses the session's
-  managed half as a typed class: `[LibraryImport]` bindings for
-  `libcdsprpc.so` (`remote_session_control`, `remote_handle64_open`,
-  `remote_handle64_invoke`, `remote_handle64_close`), `libaaudio.so` (builder,
-  stream, write, frames read, state wait, close) and `libc.so` (`setenv`);
-  `Marshal` allocation and cleanup in `try`/`finally`; the DSP handle
-  returned through an 8-byte buffer (by-reference parameters are not
-  supported); drain by `AAudioStream_waitForStateChange`, never a sleep loop.
+  managed half as a typed class with `[LibraryImport]` bindings, signatures
+  from pinned headers:
+  - DSP session setup through `libcdsprpc.so`, once: `remote_session_control`,
+    `remote_handle64_open`, `remote_handle64_close` (qualcomm/fastrpc
+    `d2475196`, `inc/remote.h:803,871,935`);
+  - per-job packets through the same library's queue: `dspqueue_create`,
+    `dspqueue_export`, `dspqueue_write`, `dspqueue_read`, `dspqueue_close`
+    (`inc/dspqueue.h`), with a blocking timed read, no polling;
+  - the direct route, libc `open`, `ioctl` and `close` with
+    `SetLastError = $true` (bionic `e4df46f2`: `ioctl(int, int, ...)`);
+  - `libaaudio.so` builder, stream, write, state and close (frameworks/av
+    `e2f09893`).
+  `Marshal` allocation and cleanup in `try`/`finally`; handles returned
+  through buffers (by-reference parameters are not supported). The drain is
+  `AAudioStream_requestStop` then `AAudioStream_waitForStateChange` to
+  STOPPED; that call is a futex wait that also wakes at least every 20 ms
+  (`AudioStream.cpp:445-466`), so it removes the application's sleep loop but
+  is not purely event-driven. The data callback is, and needs 1.2.
 - A compile-only test (the libraries exist only on Android) checks that it
-  compiles, that every import is a P/Invoke method with the declared library
-  and entry point, and that Pwsh's admission rule accepts it.
+  compiles, that every import is a P/Invoke method with the declared library,
+  entry point and last-error flag, and that Pwsh's admission rule accepts it.
 - `docs/handoff/kokoro.md` names the pinned commit, the template, the
-  out-parameter pattern and the event-driven drain.
+  out-parameter pattern and the drain.
+Done so far: `SetLastError` on native imports, tested against kernel32
+`SetLastError` on both runtimes.
 Device: none here; the Kokoro agent runs its own device test.
 
 ### 1.2 Callbacks and function-pointer calls

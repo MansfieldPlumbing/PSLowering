@@ -92,7 +92,9 @@ A declared typed subset, exercised by the fixtures in `tests/fixtures`:
   `[System.Runtime.InteropServices.LibraryImport('library', EntryPoint = 'name')]`
   whose body is a single `throw` compiles to a P/Invoke method. Parameters and
   returns are blittable (integers, floating point, `IntPtr`, `UIntPtr`);
-  `[string]` parameters need `StringMarshalling` `Utf8` or `Utf16`. Mainline
+  `[string]` parameters need `StringMarshalling` `Utf8` or `Utf16`.
+  `SetLastError = $true` keeps errno (or the Win32 last error) for
+  `[Runtime.InteropServices.Marshal]::GetLastPInvokeError()`. Mainline
   PowerShell keeps the attribute as metadata and runs the `throw`, so the
   source stays valid PowerShell.
 

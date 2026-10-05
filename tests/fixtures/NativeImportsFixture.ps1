@@ -11,6 +11,17 @@ class NativeImportsFixture {
     [System.Runtime.InteropServices.LibraryImport('kernel32.dll')]
     static [long] GetTickCount64() { throw [System.NotSupportedException]::new('native import') }
 
+    [System.Runtime.InteropServices.LibraryImport('kernel32.dll', EntryPoint = 'SetLastError', SetLastError = $true)]
+    static [void] SetLastErrorCaptured([uint] $code) { throw [System.NotSupportedException]::new('native import') }
+
+    [System.Runtime.InteropServices.LibraryImport('kernel32.dll', EntryPoint = 'SetLastError')]
+    static [void] SetLastErrorUncaptured([uint] $code) { throw [System.NotSupportedException]::new('native import') }
+
+    static [int] LastErrorAfter([uint] $code) {
+        [NativeImportsFixture]::SetLastErrorCaptured($code)
+        return [System.Runtime.InteropServices.Marshal]::GetLastPInvokeError()
+    }
+
     static [bool] IsCurrentProcess([uint] $id) {
         return [NativeImportsFixture]::CurrentProcessId() -eq $id
     }

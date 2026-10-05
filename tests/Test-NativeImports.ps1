@@ -5,7 +5,8 @@
     Mainline PowerShell keeps LibraryImport as plain metadata and runs the
     method's throw, so the source oracle cannot check these methods. Each is
     checked here against an independent answer from .NET instead: the process
-    ID, String.Length, UTF-8 byte counts and a monotonic tick count. Windows
+    ID, String.Length, UTF-8 byte counts, a monotonic tick count, and the last
+    error set by kernel32 SetLastError, kept only when declared. Windows
     only (kernel32). Invalid declarations must be rejected before output.
 #>
 [CmdletBinding()]
@@ -29,9 +30,28 @@ function Check([string] $Name, $Actual, $Expected) {
     if (-not [object]::Equals($Actual, $Expected)) { $failures.Add("${Name}: got '$Actual' ($($Actual.GetType().Name)), expected '$Expected' ($($Expected.GetType().Name))") }
 }
 
-foreach ($name in 'CurrentProcessId', 'Utf16Length', 'Utf8ByteLength', 'GetTickCount64') {
+foreach ($name in 'CurrentProcessId', 'Utf16Length', 'Utf8ByteLength', 'GetTickCount64', 'SetLastErrorCaptured', 'SetLastErrorUncaptured') {
     $m = $type.GetMethod($name)
     if (-not $m.Attributes.HasFlag([Reflection.MethodAttributes]::PinvokeImpl)) { $failures.Add("${name}: not emitted as a P/Invoke method") }
+}
+# Reflection reports the import map as a DllImportAttribute.
+$captured = $type.GetMethod('SetLastErrorCaptured').GetCustomAttributes([Runtime.InteropServices.DllImportAttribute], $false)[0]
+Check 'SetLastErrorCaptured library' $captured.Value 'kernel32.dll'
+Check 'SetLastErrorCaptured entry point' $captured.EntryPoint 'SetLastError'
+Check 'SetLastErrorCaptured SetLastError' $captured.SetLastError $true
+Check 'SetLastErrorCaptured PreserveSig' $captured.PreserveSig $true
+Check 'SetLastErrorUncaptured SetLastError' $type.GetMethod('SetLastErrorUncaptured').GetCustomAttributes([Runtime.InteropServices.DllImportAttribute], $false)[0].SetLastError $false
+
+# kernel32 SetLastError is the independent answer: captured, the runtime
+# reports the code; not captured, it keeps the value set before the call.
+foreach ($code in [uint]1234, [uint]0, [uint]0x20000001) {
+    [Runtime.InteropServices.Marshal]::SetLastPInvokeError(7)
+    $null = $type.GetMethod('SetLastErrorCaptured').Invoke($null, @($code))
+    Check "SetLastErrorCaptured($code)" ([Runtime.InteropServices.Marshal]::GetLastPInvokeError()) ([int]$code)
+    [Runtime.InteropServices.Marshal]::SetLastPInvokeError(7)
+    $null = $type.GetMethod('SetLastErrorUncaptured').Invoke($null, @($code))
+    Check "SetLastErrorUncaptured($code)" ([Runtime.InteropServices.Marshal]::GetLastPInvokeError()) 7
+    Check "LastErrorAfter($code)" $type.GetMethod('LastErrorAfter').Invoke($null, @($code)) ([int]$code)
 }
 
 Check 'CurrentProcessId' $type.GetMethod('CurrentProcessId').Invoke($null, @()) ([uint][Environment]::ProcessId)
@@ -52,7 +72,7 @@ $cases = [ordered]@{
     BodyNotThrow    = @("    $header)]`n    static [uint] M() { return 0 }", 'single throw statement')
     BoolParameter   = @("    $header)]`n    static [int] M([bool] `$b) { throw [System.NotSupportedException]::new() }", 'not blittable')
     StringNoMarshal = @("    $header)]`n    static [int] M([string] `$s) { throw [System.NotSupportedException]::new() }", 'need StringMarshalling')
-    SetLastError    = @("    $header, SetLastError = `$true)]`n    static [uint] M() { throw [System.NotSupportedException]::new() }", 'SetLastError is not supported')
+    CustomMarshal   = @("    $header, StringMarshallingCustomType = [int])]`n    static [uint] M() { throw [System.NotSupportedException]::new() }", "argument 'StringMarshallingCustomType' is not supported")
 }
 foreach ($name in $cases.Keys) {
     $member, $expected = $cases[$name]

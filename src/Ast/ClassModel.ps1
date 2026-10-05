@@ -28,7 +28,8 @@ function Get-NativeImport {
         stays valid PowerShell and fails plainly if run interpreted. Its
         parameters and return are blittable (integers, floating point,
         IntPtr, UIntPtr), and [string] parameters need StringMarshalling Utf8
-        or Utf16.
+        or Utf16. SetLastError = $true keeps errno (or the Win32 last error)
+        for [Runtime.InteropServices.Marshal]::GetLastPInvokeError().
     #>
     param([Parameter(Mandatory)][System.Management.Automation.Language.FunctionMemberAst] $Function)
 
@@ -50,15 +51,18 @@ function Get-NativeImport {
         Library           = [string](Get-AttributeArgumentValue $attribute.PositionalArguments[0])
         EntryPoint        = $Function.Name
         StringMarshalling = [System.Runtime.InteropServices.StringMarshalling]::Custom
+        SetLastError      = $false
     }
     $stringMarshallingSet = $false
     foreach ($named in $attribute.NamedArguments) {
+        if ($named.ArgumentName -notin 'EntryPoint', 'StringMarshalling', 'SetLastError') {
+            throw (& $where "argument '$($named.ArgumentName)' is not supported.")
+        }
         $value = if ($named.ExpressionOmitted) { $true } else { Get-AttributeArgumentValue $named.Argument }
         switch ($named.ArgumentName) {
             'EntryPoint'        { $import.EntryPoint = [string]$value }
             'StringMarshalling' { $import.StringMarshalling = [System.Runtime.InteropServices.StringMarshalling]$value; $stringMarshallingSet = $true }
-            'SetLastError'      { if ($value) { throw (& $where 'SetLastError is not supported yet.') } }
-            default             { throw (& $where "argument '$($named.ArgumentName)' is not supported.") }
+            'SetLastError'      { $import.SetLastError = [bool]$value }
         }
     }
 
@@ -80,12 +84,23 @@ function Get-NativeImport {
 function Add-NativeImportMethod {
     # A P/Invoke method on a TypeBuilder: the platform-default calling convention,
     # [string] parameters marshalled as the import's StringMarshalling says.
-    param([Reflection.Emit.TypeBuilder] $TypeBuilder, [string] $Name, $Import, [Type] $ReturnType, [Type[]] $ParameterTypes, [string[]] $ParameterNames)
+    # DefinePInvokeMethod cannot set SetLastError; on the persisted builder the
+    # DllImport pseudo-attribute replaces the import data with every field
+    # (System.Reflection.Emit MethodBuilderImpl.SetCustomAttributeCore,
+    # runtime ab19415702aa8139d5369e47c73edb47343c34ad). The mirror's imports
+    # are only call targets during lowering, so they never carry it.
+    param([Reflection.Emit.TypeBuilder] $TypeBuilder, [string] $Name, $Import, [Type] $ReturnType, [Type[]] $ParameterTypes, [string[]] $ParameterNames, [switch] $Persisted)
     $charSet = if ($Import.StringMarshalling -eq 'Utf16') { [Runtime.InteropServices.CharSet]::Unicode } else { [Runtime.InteropServices.CharSet]::Ansi }
     $method = $TypeBuilder.DefinePInvokeMethod($Name, $Import.Library, $Import.EntryPoint,
         [Reflection.MethodAttributes]'Public,Static,HideBySig,PinvokeImpl', [Reflection.CallingConventions]::Standard,
         $ReturnType, $ParameterTypes, [Runtime.InteropServices.CallingConvention]::Winapi, $charSet)
     $method.SetImplementationFlags([Reflection.MethodImplAttributes]::PreserveSig)
+    if ($Persisted -and $Import.SetLastError) {
+        $dllImport = [Runtime.InteropServices.DllImportAttribute]
+        $fields = [Reflection.FieldInfo[]]@('EntryPoint', 'CharSet', 'CallingConvention', 'SetLastError', 'PreserveSig' | ForEach-Object { $dllImport.GetField($_) })
+        $values = [object[]]@($Import.EntryPoint, $charSet, [Runtime.InteropServices.CallingConvention]::Winapi, $true, $true)
+        $method.SetCustomAttribute([Reflection.Emit.CustomAttributeBuilder]::new($dllImport.GetConstructor([Type[]]@([string])), [object[]]@($Import.Library), $fields, $values))
+    }
     $marshalAs = [Runtime.InteropServices.MarshalAsAttribute].GetConstructor([Type[]]@([Runtime.InteropServices.UnmanagedType]))
     for ($i = 0; $i -lt $ParameterTypes.Length; $i++) {
         $parameter = $method.DefineParameter($i + 1, [Reflection.ParameterAttributes]::None, $ParameterNames[$i])
