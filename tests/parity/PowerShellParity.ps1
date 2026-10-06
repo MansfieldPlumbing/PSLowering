@@ -2,10 +2,10 @@
 .SYNOPSIS
     Compares every compiled fixture method with the PowerShell source it came from.
 .DESCRIPTION
-    The LambdaCompiler oracle checks the emitter against the framework on the
+    The LambdaCompiler parity check compares the emitter against the framework on the
     same expression tree, so it cannot see a tree whose meaning differs from
-    the PowerShell source. This oracle runs each method twice on the same
-    inputs (OracleVectors.ps1): once as the fixture's own PowerShell class,
+    the PowerShell source. This check runs each method twice on the same
+    inputs (ParityCases.ps1): once as the fixture's own PowerShell class,
     once from the lowered assembly. Results must agree in value and type,
     or both calls must throw. Every divergence is reported; any divergence
     fails the suite.
@@ -19,7 +19,7 @@ $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
 Import-Module (Join-Path $repoRoot 'src/Dev.MansfieldPlumbing.PowerShell.Lowering.psd1') -Force
 $fixtureRoot = Join-Path $repoRoot 'tests/fixtures'
-$outDir = Join-Path $repoRoot 'build/source-oracle'
+$outDir = Join-Path $repoRoot 'build/powershell-parity'
 $null = New-Item -ItemType Directory -Force -Path $outDir
 
 function Get-SourceType([string] $Path, [string] $Class) {
@@ -78,7 +78,7 @@ function Format-Value($V) {
 
 $divergences = [Collections.Generic.List[string]]::new()
 $checked = 0
-foreach ($v in . (Join-Path $PSScriptRoot 'OracleVectors.ps1')) {
+foreach ($v in . (Join-Path $PSScriptRoot 'ParityCases.ps1')) {
     $path = Join-Path $fixtureRoot $v.Fixture
     $source = Get-SourceType $path $v.Class
     $compiled = Get-CompiledType $path $v.Class
@@ -98,7 +98,7 @@ foreach ($v in . (Join-Path $PSScriptRoot 'OracleVectors.ps1')) {
 
 $divergences | ForEach-Object { Write-Host "  DIVERGE $_" }
 [pscustomobject]@{
-    OracleSuite = 'PowerShellSourceOracle'
+    ParitySuite = 'PowerShellParity'
     Calls       = $checked
     Divergences = $divergences.Count
     Status      = if ($divergences.Count) { 'FAIL' } else { 'PASS' }

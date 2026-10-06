@@ -25,12 +25,12 @@ Keep this repository narrow and evidence-led.
 - Compiled output must not depend on SMA at run time, must contain no dynamic
   call sites, and must not run PowerShell or reparse source when invoked.
 - No private reflection into the framework or SMA in the compiler. The
-  framework's `LambdaCompiler` is used only as an oracle in tests.
+  framework's `LambdaCompiler` is used only in tests, as a second compiler to compare against.
 - A construct outside the admitted subset is rejected before any artifact is
   written, with the source position and the reason. Nothing falls back to
   running the original script.
 - Compiled methods mean what the same typed PowerShell method means.
-  `tests/oracle/PowerShellSourceOracle.ps1` runs every fixture method as
+  `tests/parity/PowerShellParity.ps1` runs every fixture method as
   PowerShell and as compiled IL on the same inputs; a divergence is a defect
   in the compiler, never a reason to change the expected result. Where exact
   agreement is impossible, the difference is stated in the README.

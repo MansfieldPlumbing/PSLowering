@@ -22,10 +22,10 @@ blocked; a checked item names the commit and the test that proves it.
   `[LibraryImport]`; executables through `-EntryPoint`.
 - Verification: 18 suites in `tests/Test-ConsolidatedRunner.ps1`, passing on
   PowerShell 7.6.6 (.NET 10.0.8, the CI tool) and 7.7.0-preview.4 (.NET
-  11.0.0-preview.6). The PowerShell source oracle runs 221 calls over 16
+  11.0.0-preview.6). The PowerShell parity check runs 221 calls over 16
   fixtures with no divergence. CI on GitHub runs the same suite.
 - On devices: PSLowering output (`25427b2`) compiled on Windows matched
-  PowerShell running on the device for all 196 oracle calls of that commit,
+  PowerShell running on the device for all 196 parity calls of that commit,
   on the x86-64 emulator, an arm64 physical device and an arm32 device, each
   on .NET 11.0.0-rc.1 (Pwsh `157852c`, `scripts/probes/lowering`).
 - Against the real workload: 39 of the 70 class methods in Pwsh's
@@ -37,7 +37,7 @@ blocked; a checked item names the commit and the test that proves it.
 ## Principles
 
 1. **PowerShell defines the meaning.** A compiled method returns what the
-   same PowerShell method returns, or both throw. The source oracle is the
+   same PowerShell method returns, or both throw. The PowerShell parity check is the
    judge; a divergence is a compiler defect, never a reason to change an
    expected result.
 2. **Stay a strict subset.** Every PSLowering source is valid PowerShell
@@ -132,11 +132,11 @@ Why: Pwsh ROADMAP R3. Remaining categories in `modules/Console.psm1`:
 - indexing into `List` (`get_Item`/`set_Item`) and `foreach` over
   collections that are not arrays (5 + 4 methods, about 200 lines);
 - PowerShell's numeric promotion for mixed operand types, matched exactly
-  and checked by the oracle (7 methods);
+  and checked by the parity check (7 methods);
 - `if` used as a value, and the remaining expression forms (9 methods);
 - conversions the CLR has no operator for (2 methods).
 Done when: the admission report reaches the target the console work needs,
-with every new construct carrying oracle vectors. Rewrite the remaining
+with every new construct carrying parity cases. Rewrite the remaining
 script block and expandable-string uses in the console source rather than
 supporting them.
 How to measure: parse `Console.psm1` from a pinned Pwsh commit, run every
@@ -151,7 +151,7 @@ Why: `Console.psm1` has 81 functions beside its 70 class methods, and the
 drawing path is mostly functions.
 Done when: a function with typed parameters, `[OutputType(...)]` and output
 only through `return` compiles to a static method of a generated class; a
-function that emits anything else to its output stream is rejected. Oracle
+function that emits anything else to its output stream is rejected. Parity
 vectors compare against calling the function in PowerShell.
 
 ## Phase 2: adoption (in the consumer repositories)
@@ -206,14 +206,14 @@ approval; versions are permanent.
   layout (needs a raw memory load/store intrinsic), packaged by the
   RyuJitDetach PE writer; console version first.
 - **JIT recording**: SuperPMI's collector on a debuggable build as evidence
-  of what RyuJIT does per architecture; an oracle, never a producer.
+  of what RyuJIT does per architecture, used for comparison, never to produce code.
 
 ## Practices for agents working here
 
 - Run the full suite on both runtimes before every commit:
   `pwsh -NoProfile -File ./tests/Test-ConsolidatedRunner.ps1` and
   `dotnet tool run pwsh -- -NoLogo -NoProfile -File ./tests/Test-ConsolidatedRunner.ps1`.
-- New constructs come with oracle vectors in `tests/oracle/OracleVectors.ps1`
+- New constructs come with parity cases in `tests/parity/ParityCases.ps1`
   and, where PowerShell cannot run them (native imports, callbacks), a test
   against an independent answer.
 - Run code from files with `-File`; load assemblies by path. A Defender or

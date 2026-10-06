@@ -3,7 +3,7 @@
     Checks native imports declared with [System.Runtime.InteropServices.LibraryImport].
 .DESCRIPTION
     Mainline PowerShell keeps LibraryImport as plain metadata and runs the
-    method's throw, so the source oracle cannot check these methods. Each is
+    method's throw, so the PowerShell parity check cannot check these methods. Each is
     checked here against an independent answer from .NET instead: the process
     ID, String.Length, UTF-8 byte counts, a monotonic tick count, and the last
     error set by kernel32 SetLastError, kept only when declared. Windows

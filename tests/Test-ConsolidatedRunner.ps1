@@ -26,9 +26,9 @@ $testSuites = @(
     @{ Name = 'Slice 7: Reflected Calls & Constructors';   Path = 'tests/Test-Slice7.ps1';                  Args = @() }
     @{ Name = 'Slice 8: Structured Exceptions & Regions';  Path = 'tests/Test-Slice8.ps1';                  Args = @() }
     @{ Name = 'Slice 9: Kokoro VoiceRowIndex Contract';    Path = 'tests/Test-Slice9.ps1';                  Args = @() }
-    @{ Name = 'Slice 10: Microsoft LambdaCompiler Oracle'; Path = 'tests/oracle/MicrosoftLambdaCompilerOracle.ps1'; Args = @() }
+    @{ Name = 'Slice 10: LambdaCompiler Parity';           Path = 'tests/parity/LambdaCompilerParity.ps1'; Args = @() }
     @{ Name = 'Slice 11: Fresh Zero-SMA Host Smoke Test';  Path = 'tests/Test-ZeroSmaHost.ps1';             Args = @() }
-    @{ Name = 'Slice 12: PowerShell Source Oracle';        Path = 'tests/oracle/PowerShellSourceOracle.ps1'; Args = @() }
+    @{ Name = 'Slice 12: PowerShell Parity';               Path = 'tests/parity/PowerShellParity.ps1'; Args = @() }
     @{ Name = 'Consumer: Pwsh Persisted-Method Admission';  Path = 'tests/consumers/Test-PwshAdmission.ps1'; Args = @() }
     @{ Name = 'Host: dotnet Without PowerShell';             Path = 'tests/Test-DotnetHost.ps1';               Args = @() }
     @{ Name = 'Admission: Rejected Constructs';              Path = 'tests/Test-Rejections.ps1';               Args = @() }

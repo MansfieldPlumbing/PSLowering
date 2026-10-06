@@ -1,9 +1,9 @@
 <#
 .SYNOPSIS
-    Input vectors shared by the differential oracles.
+    Input cases shared by the two parity checks.
 .DESCRIPTION
     Returns one entry per fixture method: the fixture file, class, method and
-    the argument lists to call it with. Both oracles use this list, so the
+    the argument lists to call it with. Both parity checks use this list, so the
     compiled assembly is checked against the framework's LambdaCompiler and
     against the PowerShell source on the same inputs. Boundary inputs
     (overflow, rounding midpoints, NaN, letter case, empty strings) are here

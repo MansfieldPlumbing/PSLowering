@@ -11,7 +11,7 @@ $script:ExpressionNewMethod = [Linq.Expressions.Expression].GetMethod(
 )
 
 # PowerShell's numeric semantics, expressed with CLR operations only. The
-# PowerShell source oracle (tests/oracle/PowerShellSourceOracle.ps1) checks
+# PowerShell parity check (tests/parity/PowerShellParity.ps1) checks
 # every rule here against PowerShell itself.
 $script:IntegralTypes = [Type[]]@([int], [long], [short], [sbyte], [byte], [ushort], [uint], [ulong])
 $script:FloatingTypes = [Type[]]@([double], [single])

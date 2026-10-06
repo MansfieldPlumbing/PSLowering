@@ -22,5 +22,5 @@ jobs:
       - name: Restore pinned PowerShell
         run: dotnet tool restore
 
-      - name: Verify the compiler, its oracles and the SMA baselines
+      - name: Verify the compiler, its parity checks and the SMA baselines
         run: dotnet tool run pwsh -- -NoLogo -NoProfile -File ./tests/Test-ConsolidatedRunner.ps1

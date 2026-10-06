@@ -111,8 +111,8 @@ running the original script.
 
 | Guarantee | Checked by |
 | --- | --- |
-| A compiled method returns what the same PowerShell method returns, or both throw | `tests/oracle/PowerShellSourceOracle.ps1`: every fixture method run as PowerShell and as IL on the same inputs (221 calls) |
-| The emitter writes the IL the framework's own compiler would accept for the same tree | `tests/oracle/MicrosoftLambdaCompilerOracle.ps1`: the same trees compiled by `LambdaCompiler`, results compared |
+| A compiled method returns what the same PowerShell method returns, or both throw | `tests/parity/PowerShellParity.ps1`: every fixture method run as PowerShell and as IL on the same inputs (221 calls) |
+| The emitter writes the IL the framework's own compiler would accept for the same tree | `tests/parity/LambdaCompilerParity.ps1`: the same trees compiled by `LambdaCompiler`, results compared |
 | Output references no `System.Management.Automation` type and no dynamic call site; its only assembly reference is `System.Private.CoreLib` | `tests/Test-ZeroSmaHost.ps1` |
 | The same input builds byte-identical assemblies with the same MVID | slices 1, 2, 4 and 5, which build twice and compare SHA-256 and MVID |
 | Output passes Pwsh's persisted-method admission | `tests/consumers/Test-PwshAdmission.ps1`: `Test-ExpressionGraph` from Pwsh's `setup.ps1` at a pinned commit and SHA-256 |
@@ -152,7 +152,7 @@ are written beneath `build/`, which Git ignores.
 ## Status and next steps
 
 Version 0.1. Compiled output matched PowerShell on the device for every
-oracle call of `25427b2` on the x86-64 emulator, an arm64 device and an arm32
+parity call of `25427b2` on the x86-64 emulator, an arm64 device and an arm32
 device (Pwsh `scripts/probes/lowering`). The ordered plan, with acceptance
 gates, principles and the list of what is deliberately not supported, is
 [ROADMAP.md](ROADMAP.md).
@@ -160,7 +160,7 @@ gates, principles and the list of what is deliberately not supported, is
 ## Repository layout
 
 - `src/`: the compiler module.
-- `tests/`: fixtures, oracles, consumer tests and the consolidated runner.
+- `tests/`: fixtures, parity checks, consumer tests and the consolidated runner.
 - `experiments/`: the earlier approach, which persists the expression trees
   SMA's own compiler produces. Its output keeps SMA's semantics and depends
   on SMA at run time; it is kept as a comparison baseline.
