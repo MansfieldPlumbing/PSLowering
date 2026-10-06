@@ -2,6 +2,20 @@
 
 Keep this repository narrow and evidence-led.
 
+## Purpose and current priority
+
+- Purpose: compile typed PowerShell into IL that keeps PowerShell's meaning
+  and references only `System.Private.CoreLib`, so PowerShell-authored code
+  runs at compiled speed on CoreCLR without the PowerShell engine.
+- Current priority: `ROADMAP.md` item 1.2 (calls through function pointers
+  and native callbacks), then 1.1 (the compiled Kokoro session driver).
+  Work on anything else only when the owner asks.
+- Toolchain: PowerShell 7.7.0-preview.5 on .NET 11.0.0-rc.1.26425.128, from
+  `tools/Get-PowerShell.ps1`. No other version is a test target.
+- A test that did not run is reported as not run, never as passing.
+- Push the day work is done, with the owner's approval; nothing lives only in
+  a local clone. Names describe the mechanism.
+
 ## What the repository holds
 
 - `src/`: a compiler that lowers methods of a typed PowerShell class to
