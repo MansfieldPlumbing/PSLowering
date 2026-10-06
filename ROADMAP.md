@@ -20,10 +20,11 @@ blocked; a checked item names the commit and the test that proves it.
   `continue`, `return`; typed arrays with negative indexing; .NET calls and
   constructors; `throw`, `try`/`catch`/`finally`; native imports through
   `[LibraryImport]`; executables through `-EntryPoint`.
-- Verification: 18 suites in `tests/Test-ConsolidatedRunner.ps1`, passing on
-  PowerShell 7.6.6 (.NET 10.0.8, the CI tool) and 7.7.0-preview.4 (.NET
-  11.0.0-preview.6). The PowerShell parity check runs 221 calls over 16
-  fixtures with no divergence. CI on GitHub runs the same suite.
+- Verification: 19 suites in `tests/Test-ConsolidatedRunner.ps1` on the one
+  pinned PowerShell, 7.7.0-preview.5 with .NET 11.0.0-rc.1.26425.128
+  (`tools/Get-PowerShell.ps1`). The PowerShell parity check runs 256 calls
+  over 17 fixtures with no divergence. CI on GitHub runs the same suite on
+  the same build.
 - On devices: PSLowering output (`25427b2`) compiled on Windows matched
   PowerShell running on the device for all 196 parity calls of that commit,
   on the x86-64 emulator, an arm64 physical device and an arm32 device, each
@@ -210,9 +211,10 @@ approval; versions are permanent.
 
 ## Practices for agents working here
 
-- Run the full suite on both runtimes before every commit:
-  `pwsh -NoProfile -File ./tests/Test-ConsolidatedRunner.ps1` and
-  `dotnet tool run pwsh -- -NoLogo -NoProfile -File ./tests/Test-ConsolidatedRunner.ps1`.
+- Run the full suite before every commit with the pinned PowerShell from
+  `tools/Get-PowerShell.ps1`:
+  `& (pwsh -NoProfile -File ./tools/Get-PowerShell.ps1) -NoProfile -File ./tests/Test-ConsolidatedRunner.ps1`.
+  No other PowerShell or .NET version is a test target.
 - New constructs come with parity cases in `tests/parity/ParityCases.ps1`
   and, where PowerShell cannot run them (native imports, callbacks), a test
   against an independent answer.

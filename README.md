@@ -144,10 +144,13 @@ continues with a `Double`.
 pwsh -NoLogo -NoProfile -File ./tests/Test-ConsolidatedRunner.ps1
 ```
 
-The runner executes 18 suites, each in its own process. All pass on
-PowerShell 7.6.6 with .NET 10.0.8 (the pinned CI tool) and on PowerShell
-7.7.0-preview.4 with .NET 11.0.0-preview.6.26359.118. Generated assemblies
-are written beneath `build/`, which Git ignores.
+The runner executes 19 suites, each in its own process, on the one pinned
+PowerShell: 7.7.0-preview.5 with .NET 11.0.0-rc.1.26425.128.
+`tools/Get-PowerShell.ps1` downloads it (or takes `-ArchivePath` to a copy
+already downloaded), checks the SHA-256 GitHub publishes for the release
+asset, and extracts it beneath `build/cache`. The pin moves to preview.6 or
+to the 7.7 release when either is published. Generated assemblies are
+written beneath `build/`, which Git ignores.
 
 ## Status and next steps
 

@@ -14,13 +14,16 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - name: Install .NET 10 SDK
+      # Test-DotnetHost runs compiled programs with the dotnet host; this SDK
+      # carries runtime 11.0.0-rc.1.26425.128, the runtime of the pinned PowerShell.
+      - name: Install .NET 11.0.0-rc.1
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
         with:
-          dotnet-version: 10.0.x
-
-      - name: Restore pinned PowerShell
-        run: dotnet tool restore
+          dotnet-version: 11.0.100-rc.1.26425.128
 
       - name: Verify the compiler, its parity checks and the SMA baselines
-        run: dotnet tool run pwsh -- -NoLogo -NoProfile -File ./tests/Test-ConsolidatedRunner.ps1
+        shell: pwsh
+        run: |
+          $pwsh = pwsh -NoProfile -File ./tools/Get-PowerShell.ps1
+          & $pwsh -NoLogo -NoProfile -File ./tests/Test-ConsolidatedRunner.ps1
+          exit $LASTEXITCODE
