@@ -24,8 +24,14 @@ function ConvertTo-PowerShellType {
     .DESCRIPTION
         Floating to integral rounds half to even and throws OverflowException
         when out of range or NaN (System.Convert, as PowerShell's numeric
-        conversion does). Integral narrowing throws on overflow. Other
-        conversions are plain CLR conversions.
+        conversion does). Integral narrowing throws on overflow. A reference
+        (an [object], a [string]) converts to a number or [char] through
+        System.Convert with the invariant culture: boxed numbers, $null,
+        $true/$false and plain numeric text match PowerShell; text PowerShell
+        reads but Convert does not ('0x10', '1e3', '5.5') throws instead of
+        producing a different value. A reference to [bool] stays an unboxing
+        conversion, because PowerShell's [bool]'false' is $true and
+        Convert.ToBoolean's is not. Other conversions are plain CLR conversions.
     #>
     param(
         [Parameter(Mandatory)][Linq.Expressions.Expression] $Expression,
@@ -39,6 +45,12 @@ function ConvertTo-PowerShellType {
     }
     if ($from -in $script:IntegralTypes -and $Type -in $script:IntegralTypes) {
         return [Linq.Expressions.Expression]::ConvertChecked($Expression, $Type)
+    }
+    if (-not $from.IsValueType -and ($Type -in $script:IntegralTypes -or $Type -in $script:FloatingTypes -or $Type -eq [char])) {
+        $convert = [Convert].GetMethod("To$($Type.Name)", [Type[]]@([object], [IFormatProvider]))
+        $culture = [Linq.Expressions.Expression]::Property($null, [Globalization.CultureInfo].GetProperty('InvariantCulture'))
+        $boxed = if ($from -eq [object]) { $Expression } else { [Linq.Expressions.Expression]::Convert($Expression, [object]) }
+        return [Linq.Expressions.Expression]::Call($convert, $boxed, $culture)
     }
     [Linq.Expressions.Expression]::Convert($Expression, $Type)
 }

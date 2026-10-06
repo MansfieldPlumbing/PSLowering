@@ -211,6 +211,26 @@ function Write-IlConversion {
 
     if ($FromType -eq $ToType) { return }
 
+    # Boxing and unboxing come first: a numeric opcode applied to a reference
+    # converts the reference's bits, not the value it holds.
+    if ($FromType.IsValueType -and -not $ToType.IsValueType) {
+        $IL.Emit([Reflection.Emit.OpCodes]::Box, (Get-IlType $FromType))
+        if ($ToType -ne [object]) { $IL.Emit([Reflection.Emit.OpCodes]::Castclass, (Get-IlType $ToType)) }
+        return
+    }
+    if (-not $FromType.IsValueType -and $ToType.IsValueType) {
+        $IL.Emit([Reflection.Emit.OpCodes]::Unbox_Any, (Get-IlType $ToType))
+        return
+    }
+    if (-not $FromType.IsValueType -and -not $ToType.IsValueType) {
+        $IL.Emit([Reflection.Emit.OpCodes]::Castclass, (Get-IlType $ToType))
+        return
+    }
+    $numeric = { param([Type] $T) $T.IsPrimitive -or $T.IsEnum }
+    if (-not (& $numeric $FromType) -or -not (& $numeric $ToType)) {
+        throw "Unsupported conversion from '$($FromType.FullName)' to '$($ToType.FullName)'."
+    }
+
     if ($Checked -and $ToType.IsPrimitive -and $ToType -notin [double], [single], [bool], [char]) {
         $un = if ($FromType -in [byte], [ushort], [uint], [ulong]) { '_Un' } else { '' }
         $suffix = @{ [int] = 'I4'; [long] = 'I8'; [short] = 'I2'; [sbyte] = 'I1'; [byte] = 'U1'; [ushort] = 'U2'; [uint] = 'U4'; [ulong] = 'U8' }[$ToType]
@@ -233,19 +253,6 @@ function Write-IlConversion {
     if ($ToType -eq [uint])   { $IL.Emit([Reflection.Emit.OpCodes]::Conv_U4); return }
     if ($ToType -eq [ulong])  { $IL.Emit([Reflection.Emit.OpCodes]::Conv_U8); return }
     if ($ToType -eq [ushort]) { $IL.Emit([Reflection.Emit.OpCodes]::Conv_U2); return }
-
-    if ($ToType -eq [object] -and $FromType.IsValueType) {
-        $IL.Emit([Reflection.Emit.OpCodes]::Box, (Get-IlType $FromType))
-        return
-    }
-    if ($FromType -eq [object] -and $ToType.IsValueType) {
-        $IL.Emit([Reflection.Emit.OpCodes]::Unbox_Any, (Get-IlType $ToType))
-        return
-    }
-    if (-not $ToType.IsValueType -and -not $FromType.IsValueType) {
-        $IL.Emit([Reflection.Emit.OpCodes]::Castclass, (Get-IlType $ToType))
-        return
-    }
 
     throw "Unsupported conversion from '$($FromType.FullName)' to '$($ToType.FullName)'."
 }

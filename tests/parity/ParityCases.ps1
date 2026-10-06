@@ -112,3 +112,12 @@ V ClassesFixture.ps1 ClassesFixture BaseValue   @(, @())
 V ClassesFixture.ps1 ClassesFixture Bits        @(@(12, 10), @(0, -1), @($max, $min))
 V ClassesFixture.ps1 ClassesFixture Shifts      @(@(1, 0), @(1, 31), @(-8, 2), @(5, 33), @(-1, 1))
 V ClassesFixture.ps1 ClassesFixture SetLast     @(@([int[]]@(1, 2, 3), 9), @([int[]]@(4, 5), 7))
+
+# Conversions from a reference: boxed numbers, $null, booleans, numeric text
+V ObjectConversionFixture.ps1 ObjectConversionFixture ToInt     @(@(5), @([long]5), @(2.5), @(3.5), @(-2.5), @($null), @($true), @([long]5000000000), @('42'), @('-3'), @([char]'a'), @([double]::NaN))
+V ObjectConversionFixture.ps1 ObjectConversionFixture ToLong    @(@(5), @([long]5000000000), @(2.5), @('-9'), @($null))
+V ObjectConversionFixture.ps1 ObjectConversionFixture ToDouble  @(@(5), @(2.5), @('2.5'), @($null), @($true))
+V ObjectConversionFixture.ps1 ObjectConversionFixture ToByte    @(@(5), @(300), @(-1), @(2.5), @('255'))
+V ObjectConversionFixture.ps1 ObjectConversionFixture ToChar    @(@(65), @('A'), @('AB'))
+V ObjectConversionFixture.ps1 ObjectConversionFixture TextToInt @(@('42'), @('-7'), @('x'))
+V ObjectConversionFixture.ps1 ObjectConversionFixture SumBoxed  @(@(, [object[]]@(1, [long]2, 2.5)), @(, [object[]]@()))
