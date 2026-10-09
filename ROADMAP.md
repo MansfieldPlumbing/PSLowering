@@ -177,12 +177,55 @@ Measured 2026-10-04 (classes fixture, PowerShell 7.7): module import
 3,572 ms cold, 748-937 ms warm. Most of the cost is PowerShell interpreting
 the compiler. Each test suite runs in a fresh process and pays the cold cost.
 
-### 3.2 Self-hosting
-Rewrite the compiler's own source into its subset (typed classes or typed
-functions; hashtables and `[pscustomobject]` records become typed classes or
-`Dictionary`s; pipelines become loops) and compile it with itself.
-Done when: two generations of the self-compiled compiler produce
-byte-identical output, and compile times are measured against 3.1.
+### 3.2 Self-hosting admission and recoverable source
+
+Scheduling: this is the next spike after the single-script consolidation
+passes its original local equivalence checks and GitHub Actions. It does
+not authorize a compiler DLL build, source embedding, language expansion,
+or compiler rewrite during consolidation.
+
+Authoritative source: the complete, directly executable root script
+`Export-LoweredAssembly.ps1`. The long-term target is one managed compiler,
+`Dev.MansfieldPlumbing.PSLowering.dll`, containing executable compiler IL
+and an exact, independently recoverable copy of that script. No module,
+parallel compiler, implementation fragments, auxiliary resource file,
+source archive or generated source wrapper.
+
+First spike: establish a source-positioned admission report against the
+consolidated script at a recorded commit and toolchain. Identify the exact
+unsupported constructs and current entrypoint boundaries preventing
+self-compilation. Ordinary functions, dynamic values, hashtables,
+pipelines, scriptblocks and runtime command dispatch are inspection
+candidates, not a substitute for measured findings. Do not broaden
+admission, rewrite semantics or execute an embedded script to manufacture
+a passing self-hosting test. Report the blockers without claiming
+self-hosting or changing existing expectations.
+
+Subsequent proof gates, requiring separately scoped implementation work:
+
+- Source preservation: embed the original `.ps1` bytes as a named managed
+  assembly resource; extract them without executing the script and verify
+  byte equality and SHA-256. Pin and verify the .NET resource-emission
+  mechanism before implementation. A DLL containing source proves source
+  preservation only, regardless of whether its compiler IL is executable.
+- Determinism: retain deterministic resource ordering and MVID generation.
+  Existing deterministic fixture outputs must match their consolidation
+  baselines. Source embedding legitimately changes the new compiler DLL's
+  hash; establish its own deterministic baseline including embedded source.
+- Actual self-hosting: the source compiler produces the compiler DLL; that
+  DLL's generated IL compiles the same authoritative source into an
+  equivalent second-generation compiler DLL, independently of executing
+  the original or embedded script. Embedding and interpreting PowerShell
+  does not satisfy this gate.
+- Bootstrap verification: compare semantic behavior, assembly references,
+  deterministic SHA-256, MVID and exact source extraction across bootstrap
+  generations, using identical source bytes, names, options and toolchain.
+  Measure compilation time against 3.1 only after correctness is proved.
+
+Dependency contracts are separate: the compiler DLL may require SMA to
+parse PowerShell input; compiled application outputs retain their existing
+CoreLib-only contract. Source preservation and self-hosting remain
+unproved until their respective gates run and their evidence is recorded.
 
 ### 3.3 Publishing
 The module to the PowerShell Gallery, later the self-compiled DLL to
