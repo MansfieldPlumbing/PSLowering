@@ -5,8 +5,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $repoRoot = Split-Path $PSScriptRoot -Parent
-$modulePath = Join-Path $repoRoot 'src/Dev.MansfieldPlumbing.PowerShell.Lowering.psd1'
-Import-Module $modulePath -Force
+$compilerPath = Join-Path $repoRoot 'Export-LoweredAssembly.ps1'
 
 $fixturePath = Join-Path $PSScriptRoot 'fixtures/Slice1Fixture.ps1'
 $outDir = Join-Path $repoRoot 'build/slice1'
@@ -18,14 +17,14 @@ if (Test-Path $outDir) {
 New-Item -ItemType Directory -Force -Path $outDir | Out-Null
 
 Write-Host "Exporting Slice1Fixture..."
-$exportReceipt = Export-LoweredAssembly `
+$exportReceipt = & $compilerPath -Mode Compile `
     -SourcePath $fixturePath `
     -ClassName 'Slice1Fixture' `
     -OutputPath $outDll `
     -Deterministic
 
 Write-Host "Testing assembly metadata..."
-$testReceipt = Test-LoweredAssembly -AssemblyPath $outDll
+$testReceipt = & $compilerPath -Mode Inspect -AssemblyPath $outDll
 
 if (-not $testReceipt.ClrOnlyAdmitted) {
     throw "Slice 1 assembly references System.Management.Automation!"
@@ -81,12 +80,50 @@ Write-Host "Verifying byte determinism..."
 $reproDir = Join-Path $repoRoot 'build/slice1_repro'
 New-Item -ItemType Directory -Force -Path $reproDir | Out-Null
 $outDll2 = Join-Path $reproDir 'Slice1Fixture.dll'
-$null = Export-LoweredAssembly -SourcePath $fixturePath -ClassName 'Slice1Fixture' -OutputPath $outDll2 -Deterministic
-$t2 = Test-LoweredAssembly -AssemblyPath $outDll2
+$null = & $compilerPath -Mode Compile -SourcePath $fixturePath -ClassName 'Slice1Fixture' -OutputPath $outDll2 -Deterministic
+$t2 = & $compilerPath -Mode Inspect -AssemblyPath $outDll2
 
 if ($t2.SHA256 -ne $testReceipt.SHA256 -or $t2.MVID -ne $testReceipt.MVID) {
     throw "Determinism check failed: hashes differ ($($testReceipt.SHA256) vs $($t2.SHA256))"
 }
+
+
+# Single-file execution contract, including a copied script with no components.
+$parseErrors = $null
+$compilerAst = [System.Management.Automation.Language.Parser]::ParseFile($compilerPath, [ref]$null, [ref]$parseErrors)
+if ($parseErrors.Count) { throw 'Compiler does not parse as one PowerShell AST.' }
+$loaders = @($compilerAst.FindAll({
+    param($n)
+    $n -is [System.Management.Automation.Language.CommandAst] -and
+    ($n.InvocationOperator -eq [System.Management.Automation.Language.TokenKind]::Dot -or
+     $n.GetCommandName() -in 'Import-Module', 'Export-ModuleMember')
+}, $true))
+if ($loaders.Count) { throw 'Compiler requires an external implementation loader.' }
+$isolatedDir = Join-Path $repoRoot 'build/single-script'
+$null = New-Item -ItemType Directory -Force -Path $isolatedDir
+$isolatedCompiler = Join-Path $isolatedDir 'Export-LoweredAssembly.ps1'
+Copy-Item -LiteralPath $compilerPath -Destination $isolatedCompiler -Force
+Push-Location ([IO.Path]::GetTempPath())
+try {
+    $isolated = & $isolatedCompiler -SourcePath $fixturePath -ClassName Slice1Fixture -OutputPath (Join-Path $isolatedDir 'Slice1Fixture.dll') -Deterministic
+    $isolatedReport = & $isolatedCompiler -Mode Inspect -AssemblyPath $isolated.OutputPath
+    if ($isolatedReport.SHA256 -ne $testReceipt.SHA256 -or $isolatedReport.MVID -ne $testReceipt.MVID) {
+        throw 'Isolated direct invocation changed deterministic assembly output.'
+    }
+    $capability = & $isolatedCompiler -Mode Capability
+    if ($capability.Product -ne 'Dev.MansfieldPlumbing.PowerShell.Lowering' -or -not $capability.PersistedAssemblyBuilder) {
+        throw 'Capability object contract changed.'
+    }
+    $helpText = & $isolatedCompiler -Help | Out-String
+    if ($helpText -notmatch 'MethodAst' -or $helpText -notmatch 'Capability') { throw 'Script help is incomplete.' }
+    $fixtureAst = [System.Management.Automation.Language.Parser]::ParseFile($fixturePath, [ref]$null, [ref]$null)
+    $method = $fixtureAst.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionMemberAst] -and $n.Name -eq 'GetAnswer' }, $true)
+    $expression = $method | & $isolatedCompiler -Mode Expression
+    if ($expression.Lambda -isnot [Linq.Expressions.LambdaExpression] -or $expression.Lambda.Compile().DynamicInvoke() -ne 42) {
+        throw 'Expression mode did not return a live executable expression in process.'
+    }
+}
+finally { Pop-Location }
 
 [pscustomobject]@{
     Slice              = 1

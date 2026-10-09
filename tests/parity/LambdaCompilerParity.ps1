@@ -5,8 +5,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $repoRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
-$modulePath = Join-Path $repoRoot 'src/Dev.MansfieldPlumbing.PowerShell.Lowering.psd1'
-Import-Module $modulePath -Force
+$compilerPath = Join-Path $repoRoot 'Export-LoweredAssembly.ps1'
 
 Write-Host "Comparing compiled IL with Microsoft LambdaCompiler..."
 
@@ -27,7 +26,7 @@ function Get-ReferenceEmittedType {
     if (-not (Test-Path $outDir)) { New-Item -ItemType Directory -Force -Path $outDir | Out-Null }
     $outDll = Join-Path $outDir "$ClassName.dll"
 
-    Export-LoweredAssembly -SourcePath $FixturePath -ClassName $ClassName -OutputPath $outDll -Deterministic | Out-Null
+    & $compilerPath -Mode Compile -SourcePath $FixturePath -ClassName $ClassName -OutputPath $outDll -Deterministic | Out-Null
     $asm = [Reflection.Assembly]::LoadFile($outDll)
     $type = $asm.GetType($ClassName, $true)
 
@@ -49,7 +48,7 @@ function Test-MethodParity {
         $n -is [System.Management.Automation.Language.TypeDefinitionAst] -and $n.Name -eq $ClassName
     }, $true)
     $mAst = $classAst.Members | Where-Object { $_.Name -eq $MethodName }
-    $lowered = ConvertTo-TypedExpression -MethodAst $mAst
+    $lowered = & $compilerPath -Mode Expression -MethodAst $mAst
 
     # 1. Compile with Microsoft LambdaCompiler
     $msDelegate = $lowered.Lambda.Compile()

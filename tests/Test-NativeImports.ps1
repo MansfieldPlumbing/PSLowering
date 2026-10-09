@@ -17,12 +17,12 @@ $ErrorActionPreference = 'Stop'
 if (-not $IsWindows) { Write-Host 'Native import test needs kernel32; skipped on this platform.'; return }
 
 $repoRoot = Split-Path $PSScriptRoot -Parent
-Import-Module (Join-Path $repoRoot 'src/Dev.MansfieldPlumbing.PowerShell.Lowering.psd1') -Force
+$compilerPath = Join-Path $repoRoot 'Export-LoweredAssembly.ps1'
 $outDir = Join-Path $repoRoot 'build/native-imports'
 $null = New-Item -ItemType Directory -Force -Path $outDir
 
 $dll = Join-Path $outDir 'NativeImportsFixture.dll'
-$null = Export-LoweredAssembly -SourcePath (Join-Path $PSScriptRoot 'fixtures/NativeImportsFixture.ps1') -ClassName NativeImportsFixture -OutputPath $dll -Deterministic
+$null = & $compilerPath -Mode Compile -SourcePath (Join-Path $PSScriptRoot 'fixtures/NativeImportsFixture.ps1') -ClassName NativeImportsFixture -OutputPath $dll -Deterministic
 $type = [Reflection.Assembly]::LoadFile($dll).GetType('NativeImportsFixture', $true)
 
 $failures = [Collections.Generic.List[string]]::new()
@@ -80,7 +80,7 @@ foreach ($name in $cases.Keys) {
     $output = Join-Path $outDir "Reject$name.dll"
     Set-Content -LiteralPath $source -Value "class Reject$name {`n$member`n}"
     $message = $null
-    try { Export-LoweredAssembly -SourcePath $source -ClassName "Reject$name" -OutputPath $output | Out-Null } catch { $message = $_.Exception.Message }
+    try { & $compilerPath -Mode Compile -SourcePath $source -ClassName "Reject$name" -OutputPath $output | Out-Null } catch { $message = $_.Exception.Message }
     if ($null -eq $message) { $failures.Add("${name}: compiled; expected rejection"); continue }
     if ($message -notmatch '\[\d+:\d+\]' -or $message -notmatch $expected) { $failures.Add("${name}: '$message'") }
     if (Test-Path -LiteralPath $output) { $failures.Add("${name}: output was written") }

@@ -18,7 +18,8 @@ Keep this repository narrow and evidence-led.
 
 ## What the repository holds
 
-- `src/`: a compiler that lowers methods of a typed PowerShell class to
+- `Export-LoweredAssembly.ps1`: the self-contained executable compiler.
+  It lowers methods of a typed PowerShell class to
   managed IL. It parses with authentic `System.Management.Automation`,
   admits a declared typed subset, lowers each admitted method to a
   `System.Linq.Expressions` tree, writes the IL with its own emitter through

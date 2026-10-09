@@ -1,18 +1,23 @@
 param(
     [switch] $FailFast = $true,
-    [string] $PwshPath
+    [string] $PwshPath,
+    # CI emits only suite names, outcomes and aggregate metrics.
+    [switch] $Sanitized
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 . (Join-Path $PSScriptRoot 'ChildPwsh.ps1')
-$pwshCommand = if ($PwshPath) { [string[]]@($PwshPath) } else { Get-ChildPwshCommand }
+[string[]] $pwshCommand = if ($PwshPath) { [string[]]@($PwshPath) } else { Get-ChildPwshCommand }
 $repoRoot = Split-Path $PSScriptRoot -Parent
 $buildDir = Join-Path $repoRoot 'build'
 if (-not (Test-Path $buildDir)) {
     New-Item -ItemType Directory -Force -Path $buildDir | Out-Null
 }
+
+$diagnosticsDir = Join-Path $buildDir 'verification-diagnostics'
+$null = New-Item -ItemType Directory -Force -Path $diagnosticsDir
 
 $testSuites = @(
     @{ Name = 'Baseline: Authentic-SMA Persistence Proof'; Path = 'tests/Test-OneParameterPersistence.ps1'; Args = @() }
@@ -38,9 +43,9 @@ $testSuites = @(
 
 Write-Host "================================================================================" -ForegroundColor Cyan
 Write-Host " PSLowering Consolidated Verification Suite" -ForegroundColor Cyan
-Write-Host " PowerShell: $($pwshCommand -join ' ')" -ForegroundColor Cyan
-Write-Host " Runtime:    $([Runtime.InteropServices.RuntimeInformation]::FrameworkDescription)" -ForegroundColor Cyan
-Write-Host " OS:         $([Runtime.InteropServices.RuntimeInformation]::OSDescription)" -ForegroundColor Cyan
+if (-not $Sanitized) { Write-Host " PowerShell: $($pwshCommand -join ' ')" -ForegroundColor Cyan }
+if (-not $Sanitized) { Write-Host " Runtime:    $([Runtime.InteropServices.RuntimeInformation]::FrameworkDescription)" -ForegroundColor Cyan }
+if (-not $Sanitized) { Write-Host " OS:         $([Runtime.InteropServices.RuntimeInformation]::OSDescription)" -ForegroundColor Cyan }
 Write-Host "================================================================================" -ForegroundColor Cyan
 
 $results = [System.Collections.Generic.List[psobject]]::new()
@@ -49,7 +54,7 @@ $swTotal = [System.Diagnostics.Stopwatch]::StartNew()
 
 foreach ($suite in $testSuites) {
     $scriptFullPath = Join-Path $repoRoot $suite.Path
-    Write-Host "`n>>> Running: $($suite.Name) [$($suite.Path)]..." -ForegroundColor Yellow
+    if (-not $Sanitized) { Write-Host "`n>>> Running: $($suite.Name) [$($suite.Path)]..." -ForegroundColor Yellow }
 
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     $cmdArgs = @($pwshCommand | Select-Object -Skip 1) + @('-NoProfile', '-File', $scriptFullPath) + $suite.Args
@@ -77,20 +82,23 @@ foreach ($suite in $testSuites) {
         $stderr = $stdErrTask.Result
 
         if ($stdout) {
-            Write-Host $stdout.TrimEnd()
+            if (-not $Sanitized) { Write-Host $stdout.TrimEnd() }
             $outputLines.Add($stdout)
         }
         if ($stderr) {
-            Write-Host $stderr.TrimEnd() -ForegroundColor DarkRed
+            if (-not $Sanitized) { Write-Host $stderr.TrimEnd() -ForegroundColor DarkRed }
             $outputLines.Add($stderr)
         }
     }
     catch {
         $exitCode = -1
         $err = $_.Exception.ToString()
-        Write-Host $err -ForegroundColor Red
+        if (-not $Sanitized) { Write-Host $err -ForegroundColor Red }
         $outputLines.Add($err)
     }
+    # Preserve complete failure evidence locally; never print it in CI.
+    $diagnosticPath = Join-Path $diagnosticsDir ('{0:D2}-{1}.log' -f ($results.Count + 1), [IO.Path]::GetFileNameWithoutExtension($suite.Path))
+    [IO.File]::WriteAllText($diagnosticPath, ($outputLines -join [Environment]::NewLine))
     $sw.Stop()
 
     $status = if ($exitCode -eq 0) { 'PASS' } else { 'FAIL' }
@@ -107,7 +115,7 @@ foreach ($suite in $testSuites) {
     }
     $results.Add($res)
 
-    Write-Host "--- Result: $status (ExitCode=$exitCode, Duration=$($res.DurationMs)ms)" -ForegroundColor $(if ($status -eq 'PASS') { 'Green' } else { 'Red' })
+    Write-Host "$($suite.Name): $status (ExitCode=$exitCode, Duration=$($res.DurationMs)ms)" -ForegroundColor $(if ($status -eq 'PASS') { 'Green' } else { 'Red' })
 
     if ($status -eq 'FAIL' -and $FailFast) {
         Write-Host "`n[FATAL] Suite failed with FailFast enabled. Halting runner." -ForegroundColor Red
@@ -141,7 +149,7 @@ $receiptPath = Join-Path $buildDir 'verification-receipt.json'
 $receiptJson = $receipt | ConvertTo-Json -Depth 5
 [IO.File]::WriteAllText($receiptPath, $receiptJson)
 
-Write-Host "Verification receipt written to: $receiptPath" -ForegroundColor Cyan
+if (-not $Sanitized) { Write-Host "Verification receipt written to: $receiptPath" -ForegroundColor Cyan }
 Write-Host "Overall Result: $($receipt.OverallStatus) ($($receipt.SuitesPassed)/$($receipt.TotalSuites) suites passed in $($receipt.TotalDurationMs)ms)" -ForegroundColor $(if ($allPassed) { 'Green' } else { 'Red' })
 
 if (-not $allPassed) {

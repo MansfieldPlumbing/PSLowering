@@ -13,7 +13,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $repoRoot = Split-Path $PSScriptRoot -Parent
-Import-Module (Join-Path $repoRoot 'src/Dev.MansfieldPlumbing.PowerShell.Lowering.psd1') -Force
+$compilerPath = Join-Path $repoRoot 'Export-LoweredAssembly.ps1'
 $outDir = Join-Path $repoRoot 'build/rejections'
 $null = New-Item -ItemType Directory -Force -Path $outDir
 
@@ -52,7 +52,7 @@ foreach ($name in @($cases.Keys) + @($classCases.Keys)) {
     }
     if (Test-Path -LiteralPath $output) { Remove-Item -LiteralPath $output -Force }
     $message = $null
-    try { Export-LoweredAssembly -SourcePath $source -ClassName "Reject$name" -OutputPath $output | Out-Null }
+    try { & $compilerPath -Mode Compile -SourcePath $source -ClassName "Reject$name" -OutputPath $output | Out-Null }
     catch { $message = $_.Exception.Message }
     if ($null -eq $message) { $failures.Add("${name}: compiled; expected rejection"); continue }
     if ($message -notmatch '\[\d+:\d+\]') { $failures.Add("${name}: no source position in '$message'") }

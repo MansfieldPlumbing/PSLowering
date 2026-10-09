@@ -5,8 +5,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $repoRoot = Split-Path $PSScriptRoot -Parent
-$modulePath = Join-Path $repoRoot 'src/Dev.MansfieldPlumbing.PowerShell.Lowering.psd1'
-Import-Module $modulePath -Force
+$compilerPath = Join-Path $repoRoot 'Export-LoweredAssembly.ps1'
 
 Write-Host "Running Zero-SMA Host and Metadata Admission Suite..."
 
@@ -32,10 +31,10 @@ foreach ($s in $slices) {
     }
 
     # Ensure freshly exported
-    Export-LoweredAssembly -SourcePath $fixPath -ClassName $s.Class -OutputPath $outDll -Deterministic | Out-Null
+    & $compilerPath -Mode Compile -SourcePath $fixPath -ClassName $s.Class -OutputPath $outDll -Deterministic | Out-Null
 
     # 1. Metadata inspection via Test-LoweredAssembly
-    $receipt = Test-LoweredAssembly -AssemblyPath $outDll
+    $receipt = & $compilerPath -Mode Inspect -AssemblyPath $outDll
 
     if ($receipt.SmaReferenced) {
         throw "Slice $($s.Slice) ($($s.Class)) references System.Management.Automation in AssemblyReferences!"

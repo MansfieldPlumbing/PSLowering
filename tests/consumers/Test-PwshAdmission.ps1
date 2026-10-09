@@ -20,7 +20,7 @@ $pwshCommit = 'fdf4719f4b55758242cdc6785408f4299bb046bf'
 $setupSha256 = 'B95525F003601335A79AD0539D6147BF0AD384D4D4CB2E3D8981C49039B6F035'
 
 $repoRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
-Import-Module (Join-Path $repoRoot 'src/Dev.MansfieldPlumbing.PowerShell.Lowering.psd1') -Force
+$compilerPath = Join-Path $repoRoot 'Export-LoweredAssembly.ps1'
 
 $cache = Join-Path $repoRoot "build/cache/pwsh/$pwshCommit"
 $setup = Join-Path $cache 'setup.ps1'
@@ -59,7 +59,7 @@ foreach ($fixture in Get-ChildItem (Join-Path $repoRoot 'tests/fixtures') -Filte
     $ast = [System.Management.Automation.Language.Parser]::ParseFile($fixture.FullName, [ref]$null, [ref]$null)
     foreach ($class in $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.TypeDefinitionAst] }, $true)) {
         foreach ($method in $class.Members | Where-Object { $_ -is [System.Management.Automation.Language.FunctionMemberAst] }) {
-            try { $lowered = ConvertTo-TypedExpression -MethodAst $method }
+            try { $lowered = & $compilerPath -Mode Expression -MethodAst $method }
             catch { $skipped.Add("$($class.Name).$($method.Name)"); continue }   # Rejected by admission; Pwsh never sees it.
             $report = Test-ExpressionGraph -Expression $lowered.Lambda.Body
             $checked++

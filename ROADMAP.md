@@ -4,12 +4,12 @@ The single plan for this repository. Each item names why it matters, what
 done means, and how it is checked. Work items in order unless a consumer is
 blocked; a checked item names the commit and the test that proves it.
 
-## Where things stand (2026-10-04, `26fe7a8`)
+## Where things stand (2026-10-09)
 
 - The compiler: typed PowerShell classes compile to IL through PSLowering's
-  own emitter (`src/`, about 2,800 lines). Every class in a source file
-  compiles into one assembly through a mirror of runtime types
-  (`src/Ast/ClassModel.ps1`).
+  own emitter in the self-contained `Export-LoweredAssembly.ps1`. Every class
+  in a source file compiles into one assembly through a mirror of runtime types
+  (`Use-ClassMirror` in the root compiler script).
 - Supported: static and instance methods; typed properties as fields with
   initializers; constructors; `$this`; classes that use each other, including
   in generic types; locals; assignment and compound assignment on variables,
@@ -228,7 +228,7 @@ CoreLib-only contract. Source preservation and self-hosting remain
 unproved until their respective gates run and their evidence is recorded.
 
 ### 3.3 Publishing
-The module to the PowerShell Gallery, later the self-compiled DLL to
+The standalone script to the PowerShell Gallery, later the self-compiled DLL to
 nuget.org, under `Dev.MansfieldPlumbing.*`. Each publish needs the owner's
 approval; versions are permanent.
 
