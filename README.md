@@ -25,7 +25,7 @@ Use `& ./Export-LoweredAssembly.ps1 -Help` or
 `Get-Help ./Export-LoweredAssembly.ps1 -Full` for script help.
 `tests/Test-Slice1.ps1` checks a copied standalone script from an unrelated
 working directory, deterministic output, all four operations and live
-expression inspection. The complete 19-suite runner checks semantic
+expression inspection. The complete 22-suite runner checks semantic
 parity, LambdaCompiler parity, native imports, rejection boundaries,
 consumer admission and execution without SMA on PowerShell
 7.7.0-preview.5 / .NET 11.0.0-rc.1.26425.128.
@@ -35,6 +35,20 @@ The single-file execution model follows read-only `Pwsh/setup.ps1` at
 Its source SHA-256 is
 `B95525F003601335A79AD0539D6147BF0AD384D4D4CB2E3D8981C49039B6F035`.
 Its application functionality is outside this compiler's scope.
+
+`tests/Test-SingleFileArchitecture.ps1` enforces the one-file implementation,
+rejects implementation loaders and additional implementation files, and runs
+all four modes and help in a fresh process from an unrelated directory.
+`tests/Test-LegacyRatchet.ps1` rebuilds 52 historical outputs and compares
+exact SHA-256, MVID and full assembly references with the frozen
+[`218f54e` baseline](tests/baseline/README.md), plus 14 exact diagnostics.
+Altered expected artifacts and diagnostics must fail the verifier process.
+
+Native indirect calls and callbacks are described in
+[the native interop contract](docs/native-interop.md), with positive/negative
+fixtures, an independent native ABI oracle, exact signature metadata checks,
+PowerShell body parity and fresh zero-SMA hosts in `tests/Test-NativeInterop.ps1`.
+The verified target is Windows x64 on the pinned PowerShell/.NET toolchain.
 
 ## Why it exists
 
@@ -171,7 +185,7 @@ continues with a `Double`.
 pwsh -NoLogo -NoProfile -File ./tests/Test-ConsolidatedRunner.ps1
 ```
 
-The runner executes 19 suites, each in its own process, on the one pinned
+The runner executes 22 suites (19 legacy suites plus three regression gates), each in its own process, on the one pinned
 PowerShell: 7.7.0-preview.5 with .NET 11.0.0-rc.1.26425.128.
 `tools/Get-PowerShell.ps1` downloads it (or takes `-ArchivePath` to a copy
 already downloaded), checks the SHA-256 GitHub publishes for the release

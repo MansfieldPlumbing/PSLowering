@@ -20,7 +20,7 @@ blocked; a checked item names the commit and the test that proves it.
   `continue`, `return`; typed arrays with negative indexing; .NET calls and
   constructors; `throw`, `try`/`catch`/`finally`; native imports through
   `[LibraryImport]`; executables through `-EntryPoint`.
-- Verification: 19 suites in `tests/Test-ConsolidatedRunner.ps1` on the one
+- Verification: 22 suites (19 legacy suites and three regression gates) in `tests/Test-ConsolidatedRunner.ps1` on the one
   pinned PowerShell, 7.7.0-preview.5 with .NET 11.0.0-rc.1.26425.128
   (`tools/Get-PowerShell.ps1`). The PowerShell parity check runs 256 calls
   over 17 fixtures with no divergence. CI on GitHub runs the same suite on
@@ -119,6 +119,16 @@ Done when:
   back through the function-pointer intrinsic, and pass it to a Windows API
   that calls back (for example `EnumWindows`), checking results against
   .NET.
+
+Verified native spike: `tests/Test-NativeInterop.ps1` on Windows x64,
+PowerShell 7.7.0-preview.5 / .NET 11.0.0-rc.1.26425.128 checks explicit
+Cdecl/Stdcall `calli`, strict UnmanagedCallersOnly emission, typed `ldftn`
+acquisition, scalar and pointer ABI contracts, CRT qsort reverse callbacks,
+PowerShell body parity, instance ThreadStart delegates and fresh zero-SMA
+hosts. [Contract and evidence](docs/native-interop.md). Android/device
+integration remains a consumer gate and was not run here. The original
+52-output / 14-diagnostic baseline is frozen independently in
+`tests/baseline/218f54e.json` and enforced by CI.
 
 ### 1.3 References between emitted assemblies
 Why: composable parts. Assembly B compiles against assembly A's real types
