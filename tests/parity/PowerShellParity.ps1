@@ -17,7 +17,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $repoRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
-Import-Module (Join-Path $repoRoot 'src/Dev.MansfieldPlumbing.PowerShell.Lowering.psd1') -Force
+$compilerPath = Join-Path $repoRoot 'Export-LoweredAssembly.ps1'
 $fixtureRoot = Join-Path $repoRoot 'tests/fixtures'
 $outDir = Join-Path $repoRoot 'build/powershell-parity'
 $null = New-Item -ItemType Directory -Force -Path $outDir
@@ -34,7 +34,7 @@ function Get-SourceType([string] $Path, [string] $Class) {
 function Get-CompiledType([string] $Path, [string] $Class) {
     $dll = Join-Path $outDir "$Class.dll"
     if (-not (Test-Path -LiteralPath $dll)) {
-        Export-LoweredAssembly -SourcePath $Path -ClassName $Class -OutputPath $dll -Deterministic | Out-Null
+        & $compilerPath -Mode Compile -SourcePath $Path -ClassName $Class -OutputPath $dll -Deterministic | Out-Null
     }
     [Reflection.Assembly]::LoadFile($dll).GetType($Class, $true)
 }

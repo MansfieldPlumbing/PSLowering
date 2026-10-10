@@ -6,7 +6,49 @@ into a .NET assembly whose methods run as ordinary IL, with no PowerShell
 engine, no C#, no Roslyn and no `Add-Type`. The compiler is itself written in
 PowerShell.
 
-The module is `Dev.MansfieldPlumbing.PowerShell.Lowering`.
+The complete compiler is the directly executable `Export-LoweredAssembly.ps1`.
+
+## Script operations
+
+Call the script with `&` in the current process to retain live AST and
+expression objects. No module import, dot-sourced implementation, helper
+script or compiler DLL is required.
+
+| Mode | Result |
+|---|---|
+| `Compile` (default) | Existing compilation receipt; accepts `SourcePath`, `ClassName`, `MethodNames`, `OutputPath`, `EntryPoint`, `Deterministic` |
+| `Expression` | Existing typed-expression object with a live `Lambda`; accepts `MethodAst`, including pipeline input |
+| `Inspect` | Existing assembly metadata receipt; accepts `AssemblyPath` |
+| `Capability` | Existing capability object |
+
+Use `& ./Export-LoweredAssembly.ps1 -Help` or
+`Get-Help ./Export-LoweredAssembly.ps1 -Full` for script help.
+`tests/Test-Slice1.ps1` checks a copied standalone script from an unrelated
+working directory, deterministic output, all four operations and live
+expression inspection. The complete 22-suite runner checks semantic
+parity, LambdaCompiler parity, native imports, rejection boundaries,
+consumer admission and execution without SMA on PowerShell
+7.7.0-preview.5 / .NET 11.0.0-rc.1.26425.128.
+
+The single-file execution model follows read-only `Pwsh/setup.ps1` at
+[`3110a85a63a48b2dc1500364cb508d06f3ea3f91`](https://github.com/MansfieldPlumbing/Pwsh/blob/3110a85a63a48b2dc1500364cb508d06f3ea3f91/setup.ps1).
+Its source SHA-256 is
+`B95525F003601335A79AD0539D6147BF0AD384D4D4CB2E3D8981C49039B6F035`.
+Its application functionality is outside this compiler's scope.
+
+`tests/Test-SingleFileArchitecture.ps1` enforces the one-file implementation,
+rejects implementation loaders and additional implementation files, and runs
+all four modes and help in a fresh process from an unrelated directory.
+`tests/Test-LegacyRatchet.ps1` rebuilds 52 historical outputs and compares
+exact SHA-256, MVID and full assembly references with the frozen
+[`218f54e` baseline](tests/baseline/README.md), plus 14 exact diagnostics.
+Altered expected artifacts and diagnostics must fail the verifier process.
+
+Native indirect calls and callbacks are described in
+[the native interop contract](docs/native-interop.md), with positive/negative
+fixtures, an independent native ABI oracle, exact signature metadata checks,
+PowerShell body parity and fresh zero-SMA hosts in `tests/Test-NativeInterop.ps1`.
+The verified target is Windows x64 on the pinned PowerShell/.NET toolchain.
 
 ## Why it exists
 
@@ -43,8 +85,7 @@ class Contract {
 ```
 
 ```powershell
-Import-Module ./src/Dev.MansfieldPlumbing.PowerShell.Lowering.psd1
-Export-LoweredAssembly -SourcePath ./Contract.ps1 -ClassName Contract -OutputPath ./build/Contract.dll -Deterministic
+& ./Export-LoweredAssembly.ps1 -SourcePath ./Contract.ps1 -ClassName Contract -OutputPath ./build/Contract.dll -Deterministic
 
 $type = [Reflection.Assembly]::LoadFile("$PWD/build/Contract.dll").GetType('Contract')
 $type.GetMethod('VoiceRowIndex').Invoke($null, @(42))   # 41
@@ -55,9 +96,9 @@ configuration beside it, run with `dotnet <file>.dll`. The entry method must
 be static, return `[int]` or `[void]`, and take no parameters or one
 `[string[]]`.
 
-`Get-LoweringCapability` reports the PowerShell and .NET versions in use and
-the semantic contract. `ConvertTo-TypedExpression` returns a method's
-lowered expression tree for inspection, and `Test-LoweredAssembly` checks a
+`-Mode Capability` reports the PowerShell and .NET versions in use and
+the semantic contract. `-Mode Expression` returns a method's
+lowered expression tree for inspection, and `-Mode Inspect` checks a
 compiled assembly.
 
 ## What it compiles
@@ -144,13 +185,23 @@ continues with a `Double`.
 pwsh -NoLogo -NoProfile -File ./tests/Test-ConsolidatedRunner.ps1
 ```
 
-The runner executes 19 suites, each in its own process, on the one pinned
+The runner executes 22 suites (19 legacy suites plus three regression gates), each in its own process, on the one pinned
 PowerShell: 7.7.0-preview.5 with .NET 11.0.0-rc.1.26425.128.
 `tools/Get-PowerShell.ps1` downloads it (or takes `-ArchivePath` to a copy
 already downloaded), checks the SHA-256 GitHub publishes for the release
 asset, and extracts it beneath `build/cache`. The pin moves to preview.6 or
 to the 7.7 release when either is published. Generated assemblies are
 written beneath `build/`, which Git ignores.
+
+Use `-Sanitized` on the existing runner for CI: it reports suite names,
+pass/fail results and aggregate metrics. Complete child output and failure
+details stay under ignored `build/verification-diagnostics/`; receipts
+stay under ignored `build/`. No verification artifacts are uploaded.
+GitHub Actions runs the complete suite on hosted Windows runners for
+pushes and pull requests, using integrity-verified pinned PowerShell and
+standalone .NET runtime archives. Local dotnet-host verification also needs
+standalone runtime 11.0.0-rc.1.26425.128 available through `PATH`; the runtime
+bundled with PowerShell does not install that standalone host.
 
 ## Status and next steps
 
@@ -162,7 +213,7 @@ gates, principles and the list of what is deliberately not supported, is
 
 ## Repository layout
 
-- `src/`: the compiler module.
+- `Export-LoweredAssembly.ps1`: the complete compiler, parameters and execution driver.
 - `tests/`: fixtures, parity checks, consumer tests and the consolidated runner.
 - `experiments/`: the earlier approach, which persists the expression trees
   SMA's own compiler produces. Its output keeps SMA's semantics and depends

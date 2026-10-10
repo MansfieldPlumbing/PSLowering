@@ -4,12 +4,12 @@ The single plan for this repository. Each item names why it matters, what
 done means, and how it is checked. Work items in order unless a consumer is
 blocked; a checked item names the commit and the test that proves it.
 
-## Where things stand (2026-10-04, `26fe7a8`)
+## Where things stand (2026-10-09)
 
 - The compiler: typed PowerShell classes compile to IL through PSLowering's
-  own emitter (`src/`, about 2,800 lines). Every class in a source file
-  compiles into one assembly through a mirror of runtime types
-  (`src/Ast/ClassModel.ps1`).
+  own emitter in the self-contained `Export-LoweredAssembly.ps1`. Every class
+  in a source file compiles into one assembly through a mirror of runtime types
+  (`Use-ClassMirror` in the root compiler script).
 - Supported: static and instance methods; typed properties as fields with
   initializers; constructors; `$this`; classes that use each other, including
   in generic types; locals; assignment and compound assignment on variables,
@@ -20,7 +20,7 @@ blocked; a checked item names the commit and the test that proves it.
   `continue`, `return`; typed arrays with negative indexing; .NET calls and
   constructors; `throw`, `try`/`catch`/`finally`; native imports through
   `[LibraryImport]`; executables through `-EntryPoint`.
-- Verification: 19 suites in `tests/Test-ConsolidatedRunner.ps1` on the one
+- Verification: 22 suites (19 legacy suites and three regression gates) in `tests/Test-ConsolidatedRunner.ps1` on the one
   pinned PowerShell, 7.7.0-preview.5 with .NET 11.0.0-rc.1.26425.128
   (`tools/Get-PowerShell.ps1`). The PowerShell parity check runs 256 calls
   over 17 fixtures with no divergence. CI on GitHub runs the same suite on
@@ -120,6 +120,16 @@ Done when:
   that calls back (for example `EnumWindows`), checking results against
   .NET.
 
+Verified native spike: `tests/Test-NativeInterop.ps1` on Windows x64,
+PowerShell 7.7.0-preview.5 / .NET 11.0.0-rc.1.26425.128 checks explicit
+Cdecl/Stdcall `calli`, strict UnmanagedCallersOnly emission, typed `ldftn`
+acquisition, scalar and pointer ABI contracts, CRT qsort reverse callbacks,
+PowerShell body parity, instance ThreadStart delegates and fresh zero-SMA
+hosts. [Contract and evidence](docs/native-interop.md). Android/device
+integration remains a consumer gate and was not run here. The original
+52-output / 14-diagnostic baseline is frozen independently in
+`tests/baseline/218f54e.json` and enforced by CI.
+
 ### 1.3 References between emitted assemblies
 Why: composable parts. Assembly B compiles against assembly A's real types
 and calls A directly.
@@ -177,15 +187,58 @@ Measured 2026-10-04 (classes fixture, PowerShell 7.7): module import
 3,572 ms cold, 748-937 ms warm. Most of the cost is PowerShell interpreting
 the compiler. Each test suite runs in a fresh process and pays the cold cost.
 
-### 3.2 Self-hosting
-Rewrite the compiler's own source into its subset (typed classes or typed
-functions; hashtables and `[pscustomobject]` records become typed classes or
-`Dictionary`s; pipelines become loops) and compile it with itself.
-Done when: two generations of the self-compiled compiler produce
-byte-identical output, and compile times are measured against 3.1.
+### 3.2 Self-hosting admission and recoverable source
+
+Scheduling: this is the next spike after the single-script consolidation
+passes its original local equivalence checks and GitHub Actions. It does
+not authorize a compiler DLL build, source embedding, language expansion,
+or compiler rewrite during consolidation.
+
+Authoritative source: the complete, directly executable root script
+`Export-LoweredAssembly.ps1`. The long-term target is one managed compiler,
+`Dev.MansfieldPlumbing.PSLowering.dll`, containing executable compiler IL
+and an exact, independently recoverable copy of that script. No module,
+parallel compiler, implementation fragments, auxiliary resource file,
+source archive or generated source wrapper.
+
+First spike: establish a source-positioned admission report against the
+consolidated script at a recorded commit and toolchain. Identify the exact
+unsupported constructs and current entrypoint boundaries preventing
+self-compilation. Ordinary functions, dynamic values, hashtables,
+pipelines, scriptblocks and runtime command dispatch are inspection
+candidates, not a substitute for measured findings. Do not broaden
+admission, rewrite semantics or execute an embedded script to manufacture
+a passing self-hosting test. Report the blockers without claiming
+self-hosting or changing existing expectations.
+
+Subsequent proof gates, requiring separately scoped implementation work:
+
+- Source preservation: embed the original `.ps1` bytes as a named managed
+  assembly resource; extract them without executing the script and verify
+  byte equality and SHA-256. Pin and verify the .NET resource-emission
+  mechanism before implementation. A DLL containing source proves source
+  preservation only, regardless of whether its compiler IL is executable.
+- Determinism: retain deterministic resource ordering and MVID generation.
+  Existing deterministic fixture outputs must match their consolidation
+  baselines. Source embedding legitimately changes the new compiler DLL's
+  hash; establish its own deterministic baseline including embedded source.
+- Actual self-hosting: the source compiler produces the compiler DLL; that
+  DLL's generated IL compiles the same authoritative source into an
+  equivalent second-generation compiler DLL, independently of executing
+  the original or embedded script. Embedding and interpreting PowerShell
+  does not satisfy this gate.
+- Bootstrap verification: compare semantic behavior, assembly references,
+  deterministic SHA-256, MVID and exact source extraction across bootstrap
+  generations, using identical source bytes, names, options and toolchain.
+  Measure compilation time against 3.1 only after correctness is proved.
+
+Dependency contracts are separate: the compiler DLL may require SMA to
+parse PowerShell input; compiled application outputs retain their existing
+CoreLib-only contract. Source preservation and self-hosting remain
+unproved until their respective gates run and their evidence is recorded.
 
 ### 3.3 Publishing
-The module to the PowerShell Gallery, later the self-compiled DLL to
+The standalone script to the PowerShell Gallery, later the self-compiled DLL to
 nuget.org, under `Dev.MansfieldPlumbing.*`. Each publish needs the owner's
 approval; versions are permanent.
 

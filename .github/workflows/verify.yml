@@ -9,21 +9,55 @@ permissions:
 
 jobs:
   persistence:
-    runs-on: windows-latest
+    runs-on: windows-2025
+    timeout-minutes: 20
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      # Test-DotnetHost runs compiled programs with the dotnet host; this SDK
-      # carries runtime 11.0.0-rc.1.26425.128, the runtime of the pinned PowerShell.
-      - name: Install .NET 11.0.0-rc.1
-        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
-        with:
-          dotnet-version: 11.0.100-rc.1.26425.128
-
-      - name: Verify the compiler, its parity checks and the SMA baselines
+      # Standalone host for Test-DotnetHost, matching the pinned PowerShell.
+      # Verify Microsoft's release SHA-512 before extracting executable code.
+      - name: Acquire pinned .NET runtime
         shell: pwsh
         run: |
-          $pwsh = pwsh -NoProfile -File ./tools/Get-PowerShell.ps1
-          & $pwsh -NoLogo -NoProfile -File ./tests/Test-ConsolidatedRunner.ps1
+          $ErrorActionPreference = 'Stop'
+          $null = New-Item -ItemType Directory -Force ./build/cache/dotnet
+          try {
+            $archive = Join-Path $PWD 'build/cache/dotnet-runtime.zip'
+            $runtime = Join-Path $PWD 'build/cache/dotnet/11.0.0-rc.1.26425.128'
+            Invoke-WebRequest -Uri 'https://builds.dotnet.microsoft.com/dotnet/Runtime/11.0.0-rc.1.26425.128/dotnet-runtime-11.0.0-rc.1.26425.128-win-x64.zip' -OutFile $archive
+            $expected = '0de14cb96790c916b4eb86de0b96a9f8befd1bc3687779b0b0813925d5a728cd34e0f91d80314e5b3d1b971cc67611170194db4de47012b506f5a183124361e8'
+            if ((Get-FileHash -LiteralPath $archive -Algorithm SHA512).Hash -ine $expected) {
+              throw 'Runtime archive integrity verification failed.'
+            }
+            Expand-Archive -LiteralPath $archive -DestinationPath $runtime
+            $installed = & "$runtime/dotnet.exe" --list-runtimes
+            if ($LASTEXITCODE -ne 0 -or $installed -notmatch '^Microsoft.NETCore.App 11\.0\.0-rc\.1\.26425\.128 ') {
+              throw 'Pinned runtime verification failed.'
+            }
+            $runtime | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+            "DOTNET_ROOT=$runtime" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+            "DOTNET_ROOT_X64=$runtime" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+            Write-Host 'Pinned .NET runtime integrity verified.'
+          }
+          catch {
+            $_ | Out-String | Set-Content ./build/runtime-acquisition.log
+            Write-Host 'Pinned .NET runtime acquisition failed.'
+            exit 1
+          }
+
+      - name: Verify parity, frozen legacy ratchet, native ABI and single-file architecture
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          try {
+            $pwsh = & ./tools/Get-PowerShell.ps1
+            if (-not (Test-Path -LiteralPath $pwsh)) { throw 'Pinned PowerShell missing.' }
+          }
+          catch {
+            $_ | Out-String | Set-Content ./build/powershell-acquisition.log
+            Write-Host 'Pinned PowerShell acquisition failed.'
+            exit 1
+          }
+          & $pwsh -NoLogo -NoProfile -File ./tests/Test-ConsolidatedRunner.ps1 -Sanitized -FailFast:false
           exit $LASTEXITCODE

@@ -15,12 +15,12 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $repoRoot = Split-Path $PSScriptRoot -Parent
-Import-Module (Join-Path $repoRoot 'src/Dev.MansfieldPlumbing.PowerShell.Lowering.psd1') -Force
+$compilerPath = Join-Path $repoRoot 'Export-LoweredAssembly.ps1'
 $outDir = Join-Path $repoRoot 'build/conversion-boundary'
 $null = New-Item -ItemType Directory -Force -Path $outDir
 $fixture = Join-Path $PSScriptRoot 'fixtures/ObjectConversionFixture.ps1'
 $dll = Join-Path $outDir 'ObjectConversionFixture.dll'
-$null = Export-LoweredAssembly -SourcePath $fixture -ClassName ObjectConversionFixture -OutputPath $dll -Deterministic
+$null = & $compilerPath -Mode Compile -SourcePath $fixture -ClassName ObjectConversionFixture -OutputPath $dll -Deterministic
 $compiled = [Reflection.Assembly]::LoadFile($dll).GetType('ObjectConversionFixture', $true)
 . $fixture
 $source = 'ObjectConversionFixture' -as [type]

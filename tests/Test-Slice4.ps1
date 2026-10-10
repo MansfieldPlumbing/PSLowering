@@ -5,8 +5,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $repoRoot = Split-Path $PSScriptRoot -Parent
-$modulePath = Join-Path $repoRoot 'src/Dev.MansfieldPlumbing.PowerShell.Lowering.psd1'
-Import-Module $modulePath -Force
+$compilerPath = Join-Path $repoRoot 'Export-LoweredAssembly.ps1'
 
 $fixturePath = Join-Path $PSScriptRoot 'fixtures/Slice4Fixture.ps1'
 $outDir = Join-Path $repoRoot 'build/slice4'
@@ -18,14 +17,14 @@ if (Test-Path $outDir) {
 New-Item -ItemType Directory -Force -Path $outDir | Out-Null
 
 Write-Host "Exporting Slice4Fixture..."
-$exportReceipt = Export-LoweredAssembly `
+$exportReceipt = & $compilerPath -Mode Compile `
     -SourcePath $fixturePath `
     -ClassName 'Slice4Fixture' `
     -OutputPath $outDll `
     -Deterministic
 
 Write-Host "Testing assembly metadata..."
-$testReceipt = Test-LoweredAssembly -AssemblyPath $outDll
+$testReceipt = & $compilerPath -Mode Inspect -AssemblyPath $outDll
 
 if (-not $testReceipt.ClrOnlyAdmitted) {
     throw "Slice 4 assembly references System.Management.Automation!"
@@ -97,8 +96,8 @@ Write-Host "Verifying byte determinism..."
 $reproDir = Join-Path $repoRoot 'build/slice4_repro'
 New-Item -ItemType Directory -Force -Path $reproDir | Out-Null
 $outDll2 = Join-Path $reproDir 'Slice4Fixture.dll'
-$null = Export-LoweredAssembly -SourcePath $fixturePath -ClassName 'Slice4Fixture' -OutputPath $outDll2 -Deterministic
-$t2 = Test-LoweredAssembly -AssemblyPath $outDll2
+$null = & $compilerPath -Mode Compile -SourcePath $fixturePath -ClassName 'Slice4Fixture' -OutputPath $outDll2 -Deterministic
+$t2 = & $compilerPath -Mode Inspect -AssemblyPath $outDll2
 
 if ($t2.SHA256 -ne $testReceipt.SHA256 -or $t2.MVID -ne $testReceipt.MVID) {
     throw "Determinism check failed: hashes differ ($($testReceipt.SHA256) vs $($t2.SHA256))"

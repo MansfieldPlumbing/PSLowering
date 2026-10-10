@@ -5,8 +5,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $repoRoot = Split-Path $PSScriptRoot -Parent
-$modulePath = Join-Path $repoRoot 'src/Dev.MansfieldPlumbing.PowerShell.Lowering.psd1'
-Import-Module $modulePath -Force
+$compilerPath = Join-Path $repoRoot 'Export-LoweredAssembly.ps1'
 
 $fixturePath = Join-Path $PSScriptRoot 'fixtures/Slice8Fixture.ps1'
 $outDir = Join-Path $repoRoot 'build/slice8'
@@ -18,14 +17,14 @@ if (Test-Path $outDir) {
 New-Item -ItemType Directory -Force -Path $outDir | Out-Null
 
 Write-Host "Exporting Slice8Fixture..."
-$exportReceipt = Export-LoweredAssembly `
+$exportReceipt = & $compilerPath -Mode Compile `
     -SourcePath $fixturePath `
     -ClassName 'Slice8Fixture' `
     -OutputPath $outDll `
     -Deterministic
 
 Write-Host "Testing assembly metadata..."
-$testReceipt = Test-LoweredAssembly -AssemblyPath $outDll
+$testReceipt = & $compilerPath -Mode Inspect -AssemblyPath $outDll
 
 if (-not $testReceipt.ClrOnlyAdmitted) {
     throw "Slice 8 assembly references System.Management.Automation!"
@@ -117,7 +116,7 @@ Write-Host "Verifying byte determinism..."
 $reproDir = Join-Path $repoRoot 'build/slice8_repro'
 New-Item -ItemType Directory -Force -Path $reproDir | Out-Null
 $outDll2 = Join-Path $reproDir 'Slice8Fixture.dll'
-Export-LoweredAssembly `
+& $compilerPath -Mode Compile `
     -SourcePath $fixturePath `
     -ClassName 'Slice8Fixture' `
     -OutputPath $outDll2 `

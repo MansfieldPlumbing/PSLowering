@@ -9,16 +9,17 @@ Keep this repository narrow and evidence-led.
   runs at compiled speed on CoreCLR without the PowerShell engine.
 - Current priority: `ROADMAP.md` item 1.2 (calls through function pointers
   and native callbacks), then 1.1 (the compiled Kokoro session driver).
-  Work on anything else only when the owner asks.
+  Work on anything else only when the team lead asks.
 - Toolchain: PowerShell 7.7.0-preview.5 on .NET 11.0.0-rc.1.26425.128, from
   `tools/Get-PowerShell.ps1`. No other version is a test target.
 - A test that did not run is reported as not run, never as passing.
-- Push the day work is done, with the owner's approval; nothing lives only in
+- Push the day work is done, with the team lead's approval; nothing lives only in
   a local clone. Names describe the mechanism.
 
 ## What the repository holds
 
-- `src/`: a compiler that lowers methods of a typed PowerShell class to
+- `Export-LoweredAssembly.ps1`: the self-contained executable compiler.
+  It lowers methods of a typed PowerShell class to
   managed IL. It parses with authentic `System.Management.Automation`,
   admits a declared typed subset, lowers each admitted method to a
   `System.Linq.Expressions` tree, writes the IL with its own emitter through
@@ -56,3 +57,35 @@ Keep this repository narrow and evidence-led.
 Do not vendor upstream repositories, generated assemblies, SDK headers, donor
 code, graphics work, JavaScript parsing work, Android packaging, or unrelated
 application archaeology here.
+
+<!-- shared-pwsh-mission:start -->
+## PowerShell workshop and shared mission
+
+C:/Dev/Pwsh-Development is our shared private GitHub-backed workshop for PowerShell
+campaigns. Start at docs/WORKSHOP.md there; read docs/mission/MISSION.md and relevant
+entries in CAPABILITY-MAP.md and RESEARCH-MAP.md. TELOS.md records the broader purpose.
+These named guidance files are shared reading entrypoints. Guidance and coordination
+may use current local documents; product inputs still require the project's pinned
+source and integrity rules. This distinction does not authorize unrelated builds,
+checkout changes or product edits.
+
+Preserve portable programmable computing and application manufacturing, including
+Android scripting/server capabilities and Windows native delivery. A console is a
+frontend; a compact appliance is an output configuration. Judge techniques by source,
+contracts and execution evidence. Current implementation limits are not universal
+technical limits.
+
+Orient before investigating: find capabilities, authoritative homes, invocation
+routes and evidence through maintained discovery entries. Prefer our PowerShell
+tools and harnesses when they fit; close recurring gaps within the task and retain
+independent verification. Surface stale guidance, contradictory contracts, misplaced
+artifacts and missing discovery routes; correct them within scope or record a precise
+handoff. Preserve improvements beyond the session. Broad environment cleanup remains
+Scott's work.
+
+Look outward before looking deeper. Find published implementations, specifications,
+manuals and prior receipts before instrumentation or reverse engineering. Distinguish
+an incomplete search from undocumented behavior. Investigate the residual consumer
+question and retain the answer. Use neutral team language. The workshop supports the
+current project's deliverable; it does not replace it.
+<!-- shared-pwsh-mission:end -->

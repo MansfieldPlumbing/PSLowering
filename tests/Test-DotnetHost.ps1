@@ -16,12 +16,12 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $repoRoot = Split-Path $PSScriptRoot -Parent
-Import-Module (Join-Path $repoRoot 'src/Dev.MansfieldPlumbing.PowerShell.Lowering.psd1') -Force
+$compilerPath = Join-Path $repoRoot 'Export-LoweredAssembly.ps1'
 $outDir = Join-Path $repoRoot 'build/dotnet-host'
 $null = New-Item -ItemType Directory -Force -Path $outDir
 $program = Join-Path $outDir 'DotnetHostProgram.dll'
 
-$result = Export-LoweredAssembly -SourcePath (Join-Path $PSScriptRoot 'fixtures/DotnetHostProgram.ps1') `
+$result = & $compilerPath -Mode Compile -SourcePath (Join-Path $PSScriptRoot 'fixtures/DotnetHostProgram.ps1') `
     -ClassName DotnetHostProgram -OutputPath $program -EntryPoint Main -Deterministic
 if (-not (Test-Path -LiteralPath $result.RuntimeConfig)) { throw 'No runtime configuration was written beside the program.' }
 
@@ -59,7 +59,7 @@ $badSource = Join-Path $outDir 'BadEntryPoint.ps1'
 Set-Content -LiteralPath $badSource -Value "class BadEntryPoint {`n    static [string] Main([int] `$x) {`n        return 'x'`n    }`n}"
 $badOutput = Join-Path $outDir 'BadEntryPoint.dll'
 $rejected = $false
-try { Export-LoweredAssembly -SourcePath $badSource -ClassName BadEntryPoint -OutputPath $badOutput -EntryPoint Main | Out-Null }
+try { & $compilerPath -Mode Compile -SourcePath $badSource -ClassName BadEntryPoint -OutputPath $badOutput -EntryPoint Main | Out-Null }
 catch { $rejected = $_.Exception.Message -match 'must be static, return \[int\] or \[void\]' }
 if (-not $rejected -or (Test-Path -LiteralPath $badOutput)) { throw 'An entry point returning [string] was not rejected before output.' }
 
