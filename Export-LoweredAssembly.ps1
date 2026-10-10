@@ -338,6 +338,84 @@ function Add-NativeImportMethod {
     $method
 }
 
+# Native expressions retain typed plans for the existing IL emitter.
+# No runtime helper or implementation dependency is emitted.
+$script:NativeExpressions = [Runtime.CompilerServices.ConditionalWeakTable[object, object]]::new()
+
+function Get-NativeMethodContract {
+    param([System.Management.Automation.Language.FunctionMemberAst] $Function)
+    $attrs = @($Function.Attributes | Where-Object {
+        $_ -is [System.Management.Automation.Language.AttributeAst] -and
+        $_.TypeName.FullName -match '(^|\.)(UnmanagedCallersOnly|UnmanagedCallConv)(Attribute)?$'
+    })
+    if (-not $attrs.Count) { return }
+    $where = '[{0}:{1}] Native method ''{2}'': ' -f $Function.Extent.StartLineNumber, $Function.Extent.StartColumnNumber, $Function.Name
+    if ($attrs.Count -ne 1) { throw ($where + 'exactly one native contract is allowed.') }
+    $a = $attrs[0]
+    if ($a.TypeName.FullName -notin 'UnmanagedCallersOnly','UnmanagedCallersOnlyAttribute','System.Runtime.InteropServices.UnmanagedCallersOnly','System.Runtime.InteropServices.UnmanagedCallersOnlyAttribute',
+        'UnmanagedCallConv','UnmanagedCallConvAttribute','System.Runtime.InteropServices.UnmanagedCallConv','System.Runtime.InteropServices.UnmanagedCallConvAttribute') {
+        throw ($where + 'native contract must name the CoreLib interop attribute.')
+    }
+    $kind = if ($a.TypeName.FullName -match 'UnmanagedCallersOnly') { 'Callback' } else { 'Calli' }
+    if (-not $Function.IsStatic -or $Function.IsConstructor) { throw ($where + 'must be a static method.') }
+    if (Get-NativeImport $Function) { throw ($where + 'cannot also be a library import.') }
+    if ($a.PositionalArguments.Count -or $a.NamedArguments.Count -ne 1 -or $a.NamedArguments[0].ArgumentName -cne 'CallConvs') {
+        throw ($where + 'requires exactly one explicit CallConvs type (Cdecl or Stdcall).')
+    }
+    $types = @($a.NamedArguments[0].Argument.FindAll({param($n) $n -is [System.Management.Automation.Language.TypeExpressionAst]},$true))
+    $text = $a.NamedArguments[0].Argument.Extent.Text
+    if ($types.Count -ne 1 -or $text -notmatch '^\[[\w.]+\]$') { throw ($where + 'CallConvs must be one literal convention type.') }
+    $convType = Resolve-AstType $types[0].TypeName
+    $conv = if ($convType -eq [Runtime.CompilerServices.CallConvCdecl]) { [Runtime.InteropServices.CallingConvention]::Cdecl }
+            elseif ($convType -eq [Runtime.CompilerServices.CallConvStdcall]) { [Runtime.InteropServices.CallingConvention]::StdCall }
+            else { throw ($where + 'only Cdecl and Stdcall are supported.') }
+    $return = if ($Function.ReturnType) { Resolve-AstType $Function.ReturnType.TypeName } else { [void] }
+    $parameters = Get-ParameterTypes $Function
+    if ($return -ne [void] -and $return -notin $script:NativeImportTypes) { throw ($where + 'return type must be a blittable scalar.') }
+    foreach ($t in $parameters) {
+        if ($t -notin $script:NativeImportTypes) { throw ($where + 'parameters must be blittable scalars; bool, char, references and byrefs are not supported.') }
+    }
+    if ($kind -eq 'Calli') {
+        if ($parameters.Count -lt 1 -or $parameters[0] -ne [IntPtr]) { throw ($where + 'first parameter must be IntPtr (native pointer width).') }
+        $statements = @($Function.Body.EndBlock.Statements)
+        if ($statements.Count -ne 1 -or $statements[0] -isnot [System.Management.Automation.Language.ThrowStatementAst]) { throw ($where + 'indirect-call stub body must be a single throw statement.') }
+    }
+    [pscustomobject]@{Kind=$kind; Convention=$conv; ConventionType=$convType; ReturnType=$return; ParameterTypes=$parameters}
+}
+
+function Set-NativeCallbackAttribute {
+    param([Reflection.Emit.MethodBuilder]$Builder,$Contract)
+    if ($Contract -and $Contract.Kind -eq 'Callback') {
+        $type=[Runtime.InteropServices.UnmanagedCallersOnlyAttribute]
+        $Builder.SetCustomAttribute([Reflection.Emit.CustomAttributeBuilder]::new($type.GetConstructor([Type[]]@()), [object[]]@(),
+            [Reflection.FieldInfo[]]@($type.GetField('CallConvs')), [object[]]@(,[Type[]]@($Contract.ConventionType))))
+    }
+}
+
+function Convert-NativeAddressExpression {
+    param([System.Management.Automation.Language.InvokeMemberExpressionAst]$Node)
+    # Exact form: [LocalClass].GetMethod('UniqueCallback').MethodHandle.GetFunctionPointer().
+    if ($Node.Static -or $Node.Member.Extent.Text -cne 'GetFunctionPointer' -or $Node.Arguments) { return }
+    $handle=$Node.Expression
+    if ($handle -isnot [System.Management.Automation.Language.MemberExpressionAst] -or $handle.Static -or $handle.Member.Extent.Text -cne 'MethodHandle') { return }
+    $lookup=$handle.Expression
+    if ($lookup -isnot [System.Management.Automation.Language.InvokeMemberExpressionAst] -or $lookup.Static -or
+        $lookup.Member.Extent.Text -cne 'GetMethod' -or $lookup.Expression -isnot [System.Management.Automation.Language.TypeExpressionAst] -or
+        $lookup.Arguments.Count -ne 1 -or $lookup.Arguments[0] -isnot [System.Management.Automation.Language.StringConstantExpressionAst]) { return }
+    $where='[{0}:{1}] Function pointer: ' -f $Node.Extent.StartLineNumber,$Node.Extent.StartColumnNumber
+    $type=Resolve-AstType $lookup.Expression.TypeName
+    if ($type -notin $script:LoweringClassTypes.Values) { throw ($where+'target must be a class in this compilation.') }
+    $methods=@($type.GetMethods([Reflection.BindingFlags]'Public,Static,Instance,DeclaredOnly') | Where-Object Name -CEQ $lookup.Arguments[0].Value)
+    if ($methods.Count -ne 1 -or -not $methods[0].IsDefined([Runtime.InteropServices.UnmanagedCallersOnlyAttribute],$false)) { throw ($where+'target must be one unambiguous UnmanagedCallersOnly method.') }
+    $method=$methods[0]
+    if ($Mode -eq 'Expression') { throw ($where+'native address acquisition requires Compile mode.') }
+    if ($script:IlMap.Members.Count -and -not $script:IlMap.Members.ContainsKey($method)) { throw ($where+'callback target was omitted from this compilation.') }
+    $constant=[Linq.Expressions.Expression]::Constant($method,[Reflection.MethodInfo])
+    $expr=[Linq.Expressions.Expression]::Call([Linq.Expressions.Expression]::Property($constant,'MethodHandle'),[RuntimeMethodHandle].GetMethod('GetFunctionPointer',[Type[]]@()))
+    $script:NativeExpressions.Add($expr,[pscustomobject]@{Kind='Address';Method=$method})
+    $expr
+}
+
 function Get-ClassModel {
     <#
     .SYNOPSIS
@@ -353,6 +431,7 @@ function Get-ClassModel {
                 throw "[{0}:{1}] Property `${2} of class {3} needs a type." -f $p.Extent.StartLineNumber, $p.Extent.StartColumnNumber, $p.Name, $class.Name
             }
         }
+        foreach ($f in $functions) { $null = Get-NativeMethodContract $f }
         if ($class.BaseTypes.Count) {
             throw "[{0}:{1}] Class {2} derives from another type; only classes deriving from System.Object are supported." -f `
                 $class.Extent.StartLineNumber, $class.Extent.StartColumnNumber, $class.Name
@@ -439,6 +518,7 @@ function New-ClassMirror {
             $attributes = $attributes -bor $(if ($m.IsStatic) { [Reflection.MethodAttributes]::Static } else { [Reflection.MethodAttributes]::Virtual })
             $return = if ($m.ReturnType) { Resolve-AstType $m.ReturnType.TypeName } else { [void] }
             $mb = $tb.DefineMethod($m.Name, $attributes, $return, (Get-ParameterTypes $m))
+            Set-NativeCallbackAttribute -Builder $mb -Contract (Get-NativeMethodContract $m)
             Write-ThrowBody $mb.GetILGenerator()
         }
     }
@@ -831,6 +911,12 @@ function Convert-AstExpression {
         [hashtable] $Scope
     )
 
+    # The concrete worker consumer needs a literal ThreadStart delegate type.
+    if ($Node -is [System.Management.Automation.Language.TypeExpressionAst]) {
+        $type = Resolve-AstType $Node.TypeName
+        if ($type -eq [Threading.ThreadStart]) { return [Linq.Expressions.Expression]::Constant($type,[Type]) }
+        throw ('[{0}:{1}] Only the ThreadStart type literal is admitted as a value.' -f $Node.Extent.StartLineNumber,$Node.Extent.StartColumnNumber)
+    }
     # 1. Constant literals
     if ($Node -is [System.Management.Automation.Language.ConstantExpressionAst]) {
         $val = $Node.Value
@@ -1022,6 +1108,8 @@ function Convert-AstExpression {
 
     # 10. Invoke Member Expression: [T]::Method(...) or $inst.Method(...) or [T]::new(...)
     if ($Node -is [System.Management.Automation.Language.InvokeMemberExpressionAst]) {
+        $address = Convert-NativeAddressExpression $Node
+        if ($address) { return $address }
         $memberName = if ($Node.Member -is [System.Management.Automation.Language.StringConstantExpressionAst]) {
             $Node.Member.Value
         } else {
@@ -1071,6 +1159,9 @@ function Convert-AstExpression {
 
             # Static method call: [T]::Method(...)
             $method = Resolve-MatchingMethod -TargetType $targetType -MethodName $memberName -ArgumentTypes $argTypes -IsStatic
+            if ($method.IsDefined([Runtime.InteropServices.UnmanagedCallersOnlyAttribute],$false)) {
+                throw ('[{0}:{1}] UnmanagedCallersOnly method cannot be called from managed code.' -f $Node.Extent.StartLineNumber,$Node.Extent.StartColumnNumber)
+            }
             $params = $method.GetParameters()
             for ($i = 0; $i -lt $params.Length; $i++) {
                 if ($argExprs[$i].Type -ne $params[$i].ParameterType) {
@@ -1083,6 +1174,9 @@ function Convert-AstExpression {
             # Instance method call: $inst.Method(...)
             $targetExpr = Convert-AstExpression -Node $Node.Expression -Scope $Scope
             $method = Resolve-MatchingMethod -TargetType $targetExpr.Type -MethodName $memberName -ArgumentTypes $argTypes
+            if ($method.IsDefined([Runtime.InteropServices.UnmanagedCallersOnlyAttribute],$false)) {
+                throw ('[{0}:{1}] UnmanagedCallersOnly method cannot be called from managed code.' -f $Node.Extent.StartLineNumber,$Node.Extent.StartColumnNumber)
+            }
             $params = $method.GetParameters()
             for ($i = 0; $i -lt $params.Length; $i++) {
                 if ($argExprs[$i].Type -ne $params[$i].ParameterType) {
@@ -1540,6 +1634,15 @@ function Convert-MethodAstToLambda {
         $pExpr = [Linq.Expressions.Expression]::Parameter($pType, $pName)
         $paramExprList.Add($pExpr)
         $paramMap[$pName] = $pExpr
+    }
+
+    $native = Get-NativeMethodContract $MethodAst
+    if ($native -and $native.Kind -eq 'Calli') {
+        if ($Mode -eq 'Expression') { throw ('[{0}:{1}] Native indirect-call stubs require Compile mode.' -f $MethodAst.Extent.StartLineNumber,$MethodAst.Extent.StartColumnNumber) }
+        $method = $classType.GetMethod($MethodAst.Name,[Type[]]$native.ParameterTypes)
+        $call = [Linq.Expressions.Expression]::Call($method,[Linq.Expressions.Expression[]]$paramExprList.ToArray())
+        $script:NativeExpressions.Add($call,$native)
+        return [pscustomobject]@{Name=$MethodAst.Name; Lambda=[Linq.Expressions.Expression]::Lambda($call,$paramExprList.ToArray()); IsStatic=$true; HasThis=$false; ReturnType=$retType; ParameterTypes=$native.ParameterTypes}
     }
 
     $thisParam = if ($MethodAst.IsStatic) { $null } else { [Linq.Expressions.Expression]::Parameter($classType, 'this') }
@@ -2001,6 +2104,11 @@ function Write-IlConstant {
         return
     }
 
+    if ($val -is [Type] -and $val -eq [Threading.ThreadStart]) {
+        $IL.Emit([Reflection.Emit.OpCodes]::Ldtoken,$val)
+        $IL.Emit([Reflection.Emit.OpCodes]::Call,[Type].GetMethod('GetTypeFromHandle',[Type[]]@([RuntimeTypeHandle])))
+        return
+    }
     if ($val -is [int]) {
         switch ($val) {
             -1 { $IL.Emit([Reflection.Emit.OpCodes]::Ldc_I4_M1); return }
@@ -2124,6 +2232,28 @@ function Write-IlExpression {
         [Parameter(Mandatory)][Linq.Expressions.Expression] $Expr,
         [Parameter(Mandatory)][hashtable] $Context
     )
+
+    $native = $null
+    if ($script:NativeExpressions.TryGetValue($Expr,[ref]$native)) {
+        if ($native.Kind -eq 'Address') {
+            $IL.Emit([Reflection.Emit.OpCodes]::Ldftn,(Get-IlMember $native.Method))
+            return
+        }
+        # Reject null before entering native code. These are typed parameters,
+        # so loading the pointer twice has no observable side effects.
+        $valid=$IL.DefineLabel()
+        Write-IlExpression -IL $IL -Expr $Expr.Arguments[0] -Context $Context
+        $IL.Emit([Reflection.Emit.OpCodes]::Brtrue,$valid)
+        $IL.Emit([Reflection.Emit.OpCodes]::Ldstr,'functionPointer')
+        $IL.Emit([Reflection.Emit.OpCodes]::Newobj,[ArgumentNullException].GetConstructor([Type[]]@([string])))
+        $IL.Emit([Reflection.Emit.OpCodes]::Throw)
+        $IL.MarkLabel($valid)
+        for ($i=1;$i -lt $Expr.Arguments.Count;$i++) { Write-IlExpression -IL $IL -Expr $Expr.Arguments[$i] -Context $Context }
+        Write-IlExpression -IL $IL -Expr $Expr.Arguments[0] -Context $Context
+        $signature=[Type[]]@($native.ParameterTypes | Select-Object -Skip 1)
+        $IL.EmitCalli([Reflection.Emit.OpCodes]::Calli,[Runtime.InteropServices.CallingConvention]$native.Convention,[Type]$native.ReturnType,$signature)
+        return
+    }
 
     # 1. Constant
     if ($Expr -is [Linq.Expressions.ConstantExpression]) {
@@ -2759,6 +2889,7 @@ function Export-LoweredAssembly {
                 $mm = $mirrorType.GetMethod($m.Name, $declared, $null, $types, $null)
                 $mb = $tb.DefineMethod($mm.Name, $mm.Attributes, (Get-IlType $mm.ReturnType), [Type[]]@($types | ForEach-Object { Get-IlType $_ }))
                 for ($i = 0; $i -lt $m.Parameters.Count; $i++) { $null = $mb.DefineParameter($i + 1, [Reflection.ParameterAttributes]::None, $m.Parameters[$i].Name.VariablePath.UserPath) }
+                Set-NativeCallbackAttribute -Builder $mb -Contract (Get-NativeMethodContract $m)
                 $script:IlMap.Members[$mm] = $mb
                 [pscustomobject]@{ Ast = $m; Builder = $mb }
             }
@@ -2792,6 +2923,8 @@ function Export-LoweredAssembly {
                         $types = @($lowered.ParameterTypes)
                         $validReturn = $lowered.ReturnType -in [int], [void]
                         $validParams = $types.Count -eq 0 -or ($types.Count -eq 1 -and $types[0] -eq [string[]])
+                        $entryNative = Get-NativeMethodContract $method.Ast
+                        if ($entryNative -and $entryNative.Kind -eq 'Callback') { throw ('[{0}:{1}] UnmanagedCallersOnly cannot be an entry point.' -f $method.Ast.Extent.StartLineNumber,$method.Ast.Extent.StartColumnNumber) }
                         if (-not $lowered.IsStatic -or -not $validReturn -or -not $validParams) {
                             throw "[{0}:{1}] Entry point '{2}' must be static, return [int] or [void], and take no parameters or one [string[]]." -f `
                                 $method.Ast.Extent.StartLineNumber, $method.Ast.Extent.StartColumnNumber, $EntryPoint
