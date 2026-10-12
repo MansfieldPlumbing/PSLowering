@@ -197,7 +197,9 @@ function Test-AstAdmitted {
         param($node)
         $node -is [System.Management.Automation.Language.CommandAst] -or
         ($node -is [System.Management.Automation.Language.PipelineAst] -and $node.PipelineElements.Count -gt 1) -or
-        $node -is [System.Management.Automation.Language.ScriptBlockExpressionAst] -or
+        ($node -is [System.Management.Automation.Language.ScriptBlockExpressionAst] -and
+            -not ($node.Parent -is [System.Management.Automation.Language.SwitchStatementAst] -and
+                @($node.Parent.Clauses | Where-Object { [object]::ReferenceEquals($_.Item1, $node) }).Count -eq 1)) -or
         $node -is [System.Management.Automation.Language.ExpandableStringExpressionAst]
     }, $true)
 
@@ -944,6 +946,9 @@ function Convert-AstExpression {
             }
             return $Scope.This
         }
+        if (($varName -in '_', 'PSItem') -and $Scope.ContainsKey('SwitchItem')) {
+            return $Scope.SwitchItem
+        }
         if ($Scope.Parameters.ContainsKey($varName)) {
             return $Scope.Parameters[$varName]
         }
@@ -1217,6 +1222,110 @@ function Convert-AstExpression {
         $Node.Extent.StartLineNumber, $Node.Extent.StartColumnNumber, $Node.Extent.Text, $Node.GetType().Name
 }
 
+function New-PredicateTruth {
+    param([Linq.Expressions.Expression] $Value)
+    $et = [Linq.Expressions.Expression]
+    if ($Value.Type -eq [bool]) { return $Value }
+    if ($Value.Type -eq [string]) {
+        return $et::Not($et::Call([string].GetMethod('IsNullOrEmpty', [type[]]@([string])), $Value))
+    }
+    if ($Value.Type -in ($script:IntegralTypes + @([single], [double], [decimal]))) {
+        return $et::NotEqual($Value, $et::Default($Value.Type))
+    }
+    if ($Value.Type.IsArray -and $Value.Type.GetArrayRank() -eq 1) {
+        $item = $et::ArrayIndex($Value, $et::Constant(0))
+        # PowerShell treats a nested singleton list by the nested list's
+        # count, rather than recursively testing its first element.
+        $one = if ($item.Type.IsArray) {
+            $et::AndAlso($et::NotEqual($item, $et::Constant($null, $item.Type)),
+                $et::GreaterThan($et::ArrayLength($item), $et::Constant(0)))
+        } else { New-PredicateTruth $item }
+        return $et::AndAlso($et::NotEqual($Value, $et::Constant($null, $Value.Type)),
+            $et::AndAlso($et::GreaterThan($et::ArrayLength($Value), $et::Constant(0)),
+                $et::OrElse($et::GreaterThan($et::ArrayLength($Value), $et::Constant(1)), $one)))
+    }
+    if ($Value -is [Linq.Expressions.ConstantExpression] -and $null -eq $Value.Value) {
+        return $et::Constant($false)
+    }
+    throw "Predicate truthiness requires a statically typed Boolean, string, number or one-dimensional array; got '$($Value.Type.FullName)'."
+}
+
+function Convert-PredicateSwitch {
+    param([System.Management.Automation.Language.SwitchStatementAst] $Statement, [hashtable] $Scope)
+    $et = [Linq.Expressions.Expression]
+    $flags = [int]$Statement.Flags
+    $caseSensitive = [int][System.Management.Automation.Language.SwitchFlags]::CaseSensitive
+    if ($flags -band (-bnot $caseSensitive)) {
+        throw "[$($Statement.Extent.StartLineNumber):$($Statement.Extent.StartColumnNumber)] Predicate switch admits exact matching only."
+    }
+    $inputValue = Convert-AstExpression -Node $Statement.Condition -Scope $Scope
+    if ($inputValue.Type -ne [string] -and $inputValue.Type -ne [string[]]) {
+        throw "[$($Statement.Extent.StartLineNumber):$($Statement.Extent.StartColumnNumber)] Predicate switch input must be string or string[]."
+    }
+    $id = $Scope.DeclaredLocals.Count
+    $values = $et::Variable([string[]], "switchValues$id")
+    $item = $et::Variable([string], "switchItem$id")
+    $index = $et::Variable([int], "switchIndex$id")
+    $matched = $et::Variable([bool], "switchMatched$id")
+    foreach ($local in @($values, $item, $index, $matched)) { $Scope.DeclaredLocals.Add($local) }
+    $breakLabel = $et::Label("switchBreak$id")
+    $continueLabel = $et::Label("switchContinue$id")
+    $hadItem = $Scope.ContainsKey('SwitchItem')
+    $oldItem = if ($hadItem) { $Scope.SwitchItem } else { $null }
+    $Scope.SwitchItem = $item
+    $Scope.Loops.Push(@{ Break = $breakLabel; Continue = $continueLabel })
+    $chain = [Collections.Generic.List[Linq.Expressions.Expression]]::new()
+    $chain.Add($et::Assign($item, $et::ArrayIndex($values, $index)))
+    $chain.Add($et::Assign($matched, $et::Constant($false)))
+    try {
+        foreach ($clause in $Statement.Clauses) {
+            if ($clause.Item1 -is [System.Management.Automation.Language.ScriptBlockExpressionAst]) {
+                $predicate = $clause.Item1.ScriptBlock
+                if ($predicate.ParamBlock -or $predicate.BeginBlock -or $predicate.ProcessBlock -or
+                    -not $predicate.EndBlock -or $predicate.EndBlock.Statements.Count -ne 1 -or
+                    $predicate.EndBlock.Statements[0] -isnot [System.Management.Automation.Language.PipelineAst]) {
+                    throw "[$($predicate.Extent.StartLineNumber):$($predicate.Extent.StartColumnNumber)] Predicate must contain one typed expression."
+                }
+                if ($predicate.Find({ param($n) $n -is [System.Management.Automation.Language.UnaryExpressionAst] -and
+                    $n.TokenKind -in 'PostfixPlusPlus','PrefixPlusPlus','PostfixMinusMinus','PrefixMinusMinus' }, $true)) {
+                    throw "[$($predicate.Extent.StartLineNumber):$($predicate.Extent.StartColumnNumber)] Predicate local variable mutation is not admitted."
+                }
+                $value = Convert-AstExpression -Node $predicate.EndBlock.Statements[0] -Scope $Scope
+                # Capture the expression once before testing its truthiness.
+                $result = $et::Variable($value.Type, "switchPredicate$($Scope.DeclaredLocals.Count)")
+                $Scope.DeclaredLocals.Add($result)
+                $condition = $et::Block($et::Assign($result, $value), (New-PredicateTruth $result))
+            } else {
+                $constant = Convert-AstExpression -Node $clause.Item1 -Scope $Scope
+                if ($constant.Type -ne [string]) { throw 'Mixed predicate switch clauses must be string constants.' }
+                # Switch exact matching treats null as the empty string.
+                $text = $et::Condition($et::Equal($item, $et::Constant($null, [string])), $et::Constant(''), $item)
+                $comparison = New-PowerShellStringComparison -Left $text -Right $constant -CaseSensitive ([bool]($flags -band $caseSensitive))
+                $condition = $et::Equal($comparison, $et::Constant(0))
+            }
+            $body = Convert-AstStatement -Statement $clause.Item2 -Scope $Scope
+            $chain.Add($et::IfThen($condition, $et::Block(
+                $et::Assign($matched, $et::Constant($true)), $body, $et::Empty())))
+        }
+        if ($Statement.Default) {
+            $chain.Add($et::IfThen($et::Not($matched), (Convert-AstStatement -Statement $Statement.Default -Scope $Scope)))
+        }
+    } finally {
+        $null = $Scope.Loops.Pop()
+        if ($hadItem) { $Scope.SwitchItem = $oldItem } else { $Scope.Remove('SwitchItem') }
+    }
+    $chain.Add($et::Label($continueLabel))
+    $chain.Add($et::Assign($index, $et::Add($index, $et::Constant(1))))
+    $chain.Add($et::Empty())
+    $loop = $et::Loop($et::IfThenElse($et::LessThan($index, $et::ArrayLength($values)),
+        $et::Block([Linq.Expressions.Expression[]]$chain.ToArray()), $et::Break($breakLabel)), $breakLabel)
+    $arrayValue = if ($inputValue.Type -eq [string]) { $et::NewArrayInit([string], [Linq.Expressions.Expression[]]@($inputValue)) } else { $inputValue }
+    return $et::Block($et::Assign($values, $arrayValue),
+        $et::IfThen($et::Equal($values, $et::Constant($null, [string[]])),
+            $et::Block($et::Assign($values, $et::NewArrayInit([string], [Linq.Expressions.Expression[]]@($et::Constant($null, [string])))), $et::Empty())),
+        $et::Assign($index, $et::Constant(0)), $loop, $et::Empty())
+}
+
 function Convert-AstStatement {
     <#
     .SYNOPSIS
@@ -1229,6 +1338,13 @@ function Convert-AstStatement {
         [Parameter(Mandatory)]
         [hashtable] $Scope
     )
+
+    # A predicate switch is an ordered chain, with a lexically bound current
+    # string. No delegate or nested lambda is emitted for its predicates.
+    if ($Statement -is [System.Management.Automation.Language.SwitchStatementAst] -and
+        @($Statement.Clauses | Where-Object { $_.Item1 -is [System.Management.Automation.Language.ScriptBlockExpressionAst] }).Count -gt 0) {
+        return Convert-PredicateSwitch -Statement $Statement -Scope $Scope
+    }
 
     # 1. Assignment statement: $x = <expr>, [int]$x = <expr>, or $arr[$i] = <expr>
     if ($Statement -is [System.Management.Automation.Language.AssignmentStatementAst]) {
@@ -1318,6 +1434,11 @@ function Convert-AstStatement {
         else {
             throw "[{0}:{1}] Unsupported assignment target '{2}'." -f `
                 $Statement.Extent.StartLineNumber, $Statement.Extent.StartColumnNumber, $leftNode.Extent.Text
+        }
+
+        if (($varName -in '_', 'PSItem') -and $Scope.ContainsKey('SwitchItem')) {
+            $value = Convert-AstExpressionAs -Node $Statement.Right -Type $Scope.SwitchItem.Type -Scope $Scope
+            return [Linq.Expressions.Expression]::Assign($Scope.SwitchItem, $value)
         }
 
         $knownType = if ($explicitType) { $explicitType }

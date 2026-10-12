@@ -44,7 +44,8 @@ function Invoke-Side([type] $Type, [string] $Method, [object[]] $Arguments) {
     # into an array cannot change the other side's input.
     $copy = [object[]]::new($Arguments.Length)
     for ($i = 0; $i -lt $Arguments.Length; $i++) {
-        $copy[$i] = if ($Arguments[$i] -is [Array]) { $Arguments[$i].Clone() } else { $Arguments[$i] }
+        if ($Arguments[$i] -is [Array]) { $copy[$i] = $Arguments[$i].Clone() }
+        else { $copy[$i] = $Arguments[$i] }
     }
     $Arguments = $copy
     $m = $Type.GetMethod($Method)
@@ -53,7 +54,7 @@ function Invoke-Side([type] $Type, [string] $Method, [object[]] $Arguments) {
     catch {
         $e = $_.Exception
         while ($e -is [Reflection.TargetInvocationException] -or $e -is [Management.Automation.MethodInvocationException]) { $e = $e.InnerException }
-        [pscustomobject]@{ Value = $null; Error = $e.GetType().Name }
+        [pscustomobject]@{ Value = $null; Error = $e.GetType().Name; Detail = $e.Message }
     }
 }
 
@@ -93,6 +94,76 @@ foreach ($v in . (Join-Path $PSScriptRoot 'ParityCases.ps1')) {
             $cText = if ($c.Error) { "throws $($c.Error)" } else { Format-Value $c.Value }
             $divergences.Add("$label  PowerShell: $sText  compiled: $cText")
         }
+    }
+}
+
+class PredicateSwitchParity {
+    static [string] Ordered([string[]] $Values) {
+        [string] $result = ''
+        switch ($Values) {
+            { $_ -ne '' } { $result += 'a' + $_ }
+            'X' { $result += 'b' + $_ }
+            { $_ -eq 'x' } { $result += 'c' + $_ }
+            default { $result += 'd' + $_ }
+        }
+        return $result
+    }
+    static [string] BreakContinue([string[]] $Values) {
+        [string] $result = ''
+        switch ($Values) {
+            { $_ -eq 'skip' } { $result += 's'; continue }
+            { $_ -eq 'stop' } { $result += 'b'; break }
+            { $true } { $result += $_ }
+            default { $result += 'd' }
+        }
+        return $result
+    }
+    static [string] Restore([object] $_) {
+        [string] $result = ''
+        switch ('outer') {
+            { $_ -eq 'outer' } {
+                $result += $_
+                switch ('inner') {
+                    { $_ -eq 'inner' } { $result += $_; break }
+                    default { $result += 'bad' }
+                }
+                $result += $_
+            }
+            default { $result += 'bad' }
+        }
+        return $result + [string]$_
+    }
+    static [string] Truth([string] $Value, [int] $Number, [bool[]] $Flags, [string] $Text) {
+        [string] $result = ''
+        switch ($Value) {
+            { $Number } { $result += 'n' }
+            { $Flags } { $result += 'a' }
+            { $Text } { $result += 's' }
+            default { $result += 'd' }
+        }
+        return $result
+    }
+}
+$switchDll = Join-Path $outDir 'PredicateSwitchParity.dll'
+& $compilerPath -SourcePath $PSCommandPath -ClassName PredicateSwitchParity -OutputPath $switchDll -Deterministic | Out-Null
+$switchType = [Reflection.Assembly]::LoadFile($switchDll).GetType('PredicateSwitchParity', $true)
+$switchCases = @(
+    @{ Method = 'Ordered'; Args = [object[]]@(,[string[]]@('x', '', 'y')) },
+    @{ Method = 'Ordered'; Args = [object[]]@(,[string[]]@()) },
+    @{ Method = 'Ordered'; Args = [object[]]@($null) },
+    @{ Method = 'BreakContinue'; Args = [object[]]@(,[string[]]@('x', 'skip', 'y', 'stop', 'z')) },
+    @{ Method = 'Restore'; Args = [object[]]@('saved') },
+    @{ Method = 'Truth'; Args = [object[]]@('x', 0, [bool[]]@(), '') },
+    @{ Method = 'Truth'; Args = [object[]]@('x', -1, [bool[]]@($false), 'yes') },
+    @{ Method = 'Truth'; Args = [object[]]@('x', 0, [bool[]]@($false, $false), '') },
+    @{ Method = 'Truth'; Args = [object[]]@('x', 0, [bool[]]@($true), '') }
+)
+foreach ($case in $switchCases) {
+    $checked++
+    $s = Invoke-Side ([PredicateSwitchParity]) $case.Method $case.Args
+    $c = Invoke-Side $switchType $case.Method $case.Args
+    if ($s.Error -or $c.Error -or -not (Test-Same $s.Value $c.Value)) {
+        $divergences.Add("PredicateSwitchParity.$($case.Method): SMA=$($s.Value) [$($s.Error) $($s.Detail)] lowered=$($c.Value) [$($c.Error) $($c.Detail)]")
     }
 }
 
