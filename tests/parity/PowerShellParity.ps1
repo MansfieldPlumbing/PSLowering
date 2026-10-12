@@ -50,7 +50,7 @@ function Invoke-Side([type] $Type, [string] $Method, [object[]] $Arguments) {
     $Arguments = $copy
     $m = $Type.GetMethod($Method)
     $target = if ($m.IsStatic) { $null } else { [Activator]::CreateInstance($Type) }
-    try { [pscustomobject]@{ Value = $m.Invoke($target, $Arguments); Error = $null } }
+    try { [pscustomobject]@{ Value = $m.Invoke($target, $Arguments); Error = $null; Detail = $null } }
     catch {
         $e = $_.Exception
         while ($e -is [Reflection.TargetInvocationException] -or $e -is [Management.Automation.MethodInvocationException]) { $e = $e.InnerException }
@@ -98,6 +98,18 @@ foreach ($v in . (Join-Path $PSScriptRoot 'ParityCases.ps1')) {
 }
 
 class PredicateSwitchParity {
+    static [bool[]] Membership([string] $Value, [string[]] $Values) {
+        return [bool[]]@(($Value -in $Values), ($Value -notin $Values), ($Value -cin $Values), ($Value -cnotin $Values))
+    }
+    static [string] MembershipPredicate([string] $Value) {
+        [string] $result = ''
+        switch ($Value) {
+            { $_ -in 'x', 'y' } { $result += 'a' }
+            { $_ -notin 'z', 'y' } { $result += 'b' }
+            default { $result += 'd' }
+        }
+        return $result
+    }
     static [string] Ordered([string[]] $Values) {
         [string] $result = ''
         switch ($Values) {
@@ -148,6 +160,13 @@ $switchDll = Join-Path $outDir 'PredicateSwitchParity.dll'
 & $compilerPath -SourcePath $PSCommandPath -ClassName PredicateSwitchParity -OutputPath $switchDll -Deterministic | Out-Null
 $switchType = [Reflection.Assembly]::LoadFile($switchDll).GetType('PredicateSwitchParity', $true)
 $switchCases = @(
+    @{ Method = 'Membership'; Args = [object[]]@('x', [string[]]@('X', 'y')) },
+    @{ Method = 'Membership'; Args = [object[]]@('', [string[]]@($null, '')) },
+    @{ Method = 'Membership'; Args = [object[]]@('x', [string[]]@()) },
+    @{ Method = 'Membership'; Args = [object[]]@('x', $null) },
+    @{ Method = 'MembershipPredicate'; Args = [object[]]@('X') },
+    @{ Method = 'MembershipPredicate'; Args = [object[]]@('y') },
+    @{ Method = 'MembershipPredicate'; Args = [object[]]@('z') },
     @{ Method = 'Ordered'; Args = [object[]]@(,[string[]]@('x', '', 'y')) },
     @{ Method = 'Ordered'; Args = [object[]]@(,[string[]]@()) },
     @{ Method = 'Ordered'; Args = [object[]]@($null) },

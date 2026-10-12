@@ -1040,6 +1040,30 @@ function Convert-AstExpression {
     # 8. Binary arithmetic and comparison expressions
     if ($Node -is [System.Management.Automation.Language.BinaryExpressionAst]) {
         $left = Convert-AstExpression -Node $Node.Left -Scope $Scope
+        if ($Node.Operator -in 'Iin', 'Inotin', 'Cin', 'Cnotin') {
+            $right = Convert-AstExpressionAs -Node $Node.Right -Type ([string[]]) -Scope $Scope
+            if ($left.Type -ne [string]) {
+                throw "[$($Node.Extent.StartLineNumber):$($Node.Extent.StartColumnNumber)] Membership requires a string value and string[] collection."
+            }
+            $et = [Linq.Expressions.Expression]
+            $id = $Scope.DeclaredLocals.Count
+            $value = $et::Variable([string], "membershipValue$id")
+            $array = $et::Variable([string[]], "membershipArray$id")
+            $index = $et::Variable([int], "membershipIndex$id")
+            $found = $et::Variable([bool], "membershipFound$id")
+            foreach ($local in @($value, $array, $index, $found)) { $Scope.DeclaredLocals.Add($local) }
+            $done = $et::Label("membershipDone$id")
+            $compare = New-PowerShellStringComparison -Left ($et::ArrayIndex($array, $index)) -Right $value -CaseSensitive ([string]$Node.Operator).StartsWith('C', [StringComparison]::Ordinal)
+            $loop = $et::Loop($et::IfThenElse($et::LessThan($index, $et::ArrayLength($array)),
+                $et::Block($et::IfThen($et::Equal($compare, $et::Constant(0)),
+                    $et::Block($et::Assign($found, $et::Constant($true)), $et::Break($done))),
+                    $et::Assign($index, $et::Add($index, $et::Constant(1))), $et::Empty()),
+                $et::Break($done)), $done)
+            $result = if ($Node.Operator -in 'Inotin', 'Cnotin') { $et::Not($found) } else { $found }
+            return $et::Block($et::Assign($value, $left), $et::Assign($array, $right),
+                $et::Assign($index, $et::Constant(0)), $et::Assign($found, $et::Constant($false)),
+                $et::IfThen($et::NotEqual($array, $et::Constant($null, [string[]])), $loop), $result)
+        }
         $right = Convert-AstExpression -Node $Node.Right -Scope $Scope
 
         if ($Node.Operator -in 'Shl', 'Shr') {
