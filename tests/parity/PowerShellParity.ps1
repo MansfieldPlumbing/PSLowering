@@ -159,6 +159,11 @@ class PredicateSwitchParity {
 class StringThrowParity {
     static [void] Fail([string] $Message) { throw ('encoder: ' + $Message) }
 }
+class CharacterConversionParity {
+    static [char] FromInt([int] $Value) { return [char]$Value }
+    static [char] FromLong([long] $Value) { return [char]$Value }
+    static [int] ToInt([char] $Value) { return [int]$Value }
+}
 
 $switchDll = Join-Path $outDir 'PredicateSwitchParity.dll'
 & $compilerPath -SourcePath $PSCommandPath -ClassName PredicateSwitchParity -OutputPath $switchDll -Deterministic | Out-Null
@@ -191,6 +196,25 @@ foreach ($case in $switchCases) {
 }
 
 $throwType = $switchType.Assembly.GetType('StringThrowParity', $true)
+$characterType = $switchType.Assembly.GetType('CharacterConversionParity', $true)
+foreach ($value in @(-1, 0, 48, 55296, 65535, 65536, [int]::MaxValue)) {
+    foreach ($method in @('FromInt', 'FromLong')) {
+        $checked++
+        $arguments = if ($method -eq 'FromLong') { [object[]]@([long]$value) } else { [object[]]@([int]$value) }
+        $s = Invoke-Side ([CharacterConversionParity]) $method $arguments
+        $c = Invoke-Side $characterType $method $arguments
+        if (($s.Error -or $c.Error) -and -not ($s.Error -and $c.Error) -or
+            (-not $s.Error -and -not (Test-Same $s.Value $c.Value))) {
+            $divergences.Add("Character conversion $method($value): SMA=$($s.Value) [$($s.Error)] lowered=$($c.Value) [$($c.Error)]")
+        }
+    }
+}
+foreach ($value in @([char]0, [char]48, [char]65535)) {
+    $checked++
+    $s = Invoke-Side ([CharacterConversionParity]) 'ToInt' ([object[]]@($value))
+    $c = Invoke-Side $characterType 'ToInt' ([object[]]@($value))
+    if ($s.Error -or $c.Error -or -not (Test-Same $s.Value $c.Value)) { $divergences.Add('Char-to-Int32 conversion diverged.') }
+}
 foreach ($message in @('bad register', "line one`nline two", 'données')) {
     $checked++
     $s = Invoke-Side ([StringThrowParity]) 'Fail' ([object[]]@($message))

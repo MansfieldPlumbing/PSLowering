@@ -617,6 +617,12 @@ function ConvertTo-PowerShellType {
     )
     $from = $Expression.Type
     if ($from -eq $Type) { return $Expression }
+    if ($from -in $script:IntegralTypes -and $Type -eq [char]) {
+        # PowerShell's integral-to-Char cast checks the UTF-16 code-unit range.
+        # A plain conv.u2 would silently truncate negative or oversized values.
+        $convert = [Convert].GetMethod('ToChar', [Type[]]@($from))
+        return [Linq.Expressions.Expression]::Call($convert, $Expression)
+    }
     if ($from -in $script:FloatingTypes -and $Type -in $script:IntegralTypes) {
         $convert = [Convert].GetMethod("To$($Type.Name)", [Type[]]@($from))
         return [Linq.Expressions.Expression]::Call($convert, $Expression)
