@@ -192,6 +192,33 @@ function Test-AstAdmitted {
 
     $violations = [System.Collections.Generic.List[pscustomobject]]::new()
 
+    # A lowered unit consists of its compiled classes, not the surrounding
+    # PowerShell host script. String throws intentionally lose SMA identity;
+    # catches in that unit must not depend on SMA exception inspection.
+    $unit = $Ast
+    while ($unit.Parent) { $unit = $unit.Parent }
+    foreach ($typeAst in $unit.FindAll({ param($n) $n -is [System.Management.Automation.Language.TypeDefinitionAst] }, $true)) {
+        foreach ($catchAst in $typeAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.CatchClauseAst] }, $true)) {
+            foreach ($catchType in $catchAst.CatchTypes) {
+                $resolved = Resolve-AstType $catchType.TypeName
+                if ($resolved.Assembly.GetName().Name -eq 'System.Management.Automation' -and [Exception].IsAssignableFrom($resolved)) {
+                    throw "[$($catchType.Extent.File):$($catchType.Extent.StartLineNumber)] ClrOnly catch cannot filter on an SMA exception type."
+                }
+            }
+            foreach ($read in $catchAst.Body.FindAll({ param($n)
+                ($n -is [System.Management.Automation.Language.MemberExpressionAst] -and $n.Member -is [System.Management.Automation.Language.StringConstantExpressionAst] -and $n.Member.Value -eq 'ErrorRecord') -or
+                ($n -is [System.Management.Automation.Language.VariableExpressionAst] -and $n.VariablePath.UserPath -in '_', 'PSItem', 'Error', 'ErrorRecord')
+            }, $true)) {
+                $target = $read
+                if ($target.Parent -is [System.Management.Automation.Language.ConvertExpressionAst]) { $target = $target.Parent }
+                if ($target.Parent -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+                    $target.Parent.Operator -eq [System.Management.Automation.Language.TokenKind]::Equals -and
+                    [object]::ReferenceEquals($target.Parent.Left, $target)) { continue }
+                throw "[$($read.Extent.File):$($read.Extent.StartLineNumber)] ClrOnly catch cannot read ErrorRecord, `$_, `$PSItem or `$Error."
+            }
+        }
+    }
+
     # Disallowed AST node types in compiled methods
     $disallowed = $Ast.FindAll({
         param($node)
@@ -766,13 +793,15 @@ function Read-PowerShellClass {
     #>
     param(
         [Parameter(Mandatory)][string] $Source,
-        [Parameter()][string] $ClassName
+        [Parameter()][string] $ClassName,
+        [Parameter()][string] $SourceFile = ''
     )
 
     $tokens = $null
     $errors = $null
     $ast = [System.Management.Automation.Language.Parser]::ParseInput(
         $Source,
+        $SourceFile,
         [ref]$tokens,
         [ref]$errors
     )
@@ -1619,9 +1648,33 @@ function Convert-AstStatement {
     if ($Statement -is [System.Management.Automation.Language.ThrowStatementAst]) {
         if ($Statement.Pipeline) {
             $exExpr = Convert-AstExpression -Node $Statement.Pipeline -Scope $Scope
+            # ClrOnly string-throw contract: preserve the supplied message in
+            # InvalidOperationException. SMA RuntimeException identity is not
+            # preserved. The admission pass rejects SMA-dependent catches.
+            if ($exExpr.Type -eq [string]) {
+                $ctor = [InvalidOperationException].GetConstructor([type[]]@([string]))
+                $exception = $script:ExpressionNewMethod.Invoke($null, [object[]]@($ctor, [Linq.Expressions.Expression[]]@($exExpr)))
+                return [Linq.Expressions.Expression]::Throw($exception, [void])
+            }
+            # Explicit CoreLib exception construction retains the previously
+            # admitted structured-exception contract (Slice8Fixture). This
+            # does not admit exception variables or ErrorRecord operands.
+            $operand = $Statement.Pipeline
+            while ($operand -is [System.Management.Automation.Language.PipelineAst] -or
+                   $operand -is [System.Management.Automation.Language.CommandExpressionAst] -or
+                   $operand -is [System.Management.Automation.Language.ParenExpressionAst]) {
+                if ($operand -is [System.Management.Automation.Language.PipelineAst]) { $operand = $operand.PipelineElements[0] }
+                elseif ($operand -is [System.Management.Automation.Language.CommandExpressionAst]) { $operand = $operand.Expression }
+                else { $operand = $operand.Pipeline }
+            }
+            if ($operand -isnot [System.Management.Automation.Language.InvokeMemberExpressionAst] -or
+                -not $operand.Static -or $operand.Member.Value -ne 'new' -or
+                -not [Exception].IsAssignableFrom($exExpr.Type) -or $exExpr.Type.Assembly -ne [object].Assembly) {
+                throw "[$($Statement.Extent.File):$($Statement.Extent.StartLineNumber)] Non-string throw operand requires a separate admission decision."
+            }
             return [Linq.Expressions.Expression]::Throw($exExpr, [void])
         } else {
-            return [Linq.Expressions.Expression]::Rethrow([void])
+            throw "[$($Statement.Extent.File):$($Statement.Extent.StartLineNumber)] Rethrow requires a separate admission decision."
         }
     }
 
@@ -2982,7 +3035,7 @@ function Export-LoweredAssembly {
     }
 
     $source = [IO.File]::ReadAllText($fullSourcePath)
-    $parsed = Read-PowerShellClass -Source $source -ClassName $ClassName
+    $parsed = Read-PowerShellClass -Source $source -ClassName $ClassName -SourceFile $fullSourcePath
     $targetClass = $parsed.ClassAst
     $classAsts = @($parsed.Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.TypeDefinitionAst] -and $n.IsClass }, $true))
     $model = @(Get-ClassModel -ClassAsts $classAsts)

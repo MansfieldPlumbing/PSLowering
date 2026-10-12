@@ -156,6 +156,10 @@ class PredicateSwitchParity {
         return $result
     }
 }
+class StringThrowParity {
+    static [void] Fail([string] $Message) { throw ('encoder: ' + $Message) }
+}
+
 $switchDll = Join-Path $outDir 'PredicateSwitchParity.dll'
 & $compilerPath -SourcePath $PSCommandPath -ClassName PredicateSwitchParity -OutputPath $switchDll -Deterministic | Out-Null
 $switchType = [Reflection.Assembly]::LoadFile($switchDll).GetType('PredicateSwitchParity', $true)
@@ -183,6 +187,50 @@ foreach ($case in $switchCases) {
     $c = Invoke-Side $switchType $case.Method $case.Args
     if ($s.Error -or $c.Error -or -not (Test-Same $s.Value $c.Value)) {
         $divergences.Add("PredicateSwitchParity.$($case.Method): SMA=$($s.Value) [$($s.Error) $($s.Detail)] lowered=$($c.Value) [$($c.Error) $($c.Detail)]")
+    }
+}
+
+$throwType = $switchType.Assembly.GetType('StringThrowParity', $true)
+foreach ($message in @('bad register', "line one`nline two", 'données')) {
+    $checked++
+    $s = Invoke-Side ([StringThrowParity]) 'Fail' ([object[]]@($message))
+    $c = Invoke-Side $throwType 'Fail' ([object[]]@($message))
+    if ($s.Detail -cne $c.Detail -or $c.Error -cne 'InvalidOperationException') {
+        $divergences.Add("String throw message: SMA=$($s.Detail), lowered=$($c.Detail) [$($c.Error)]")
+    }
+    $caughtWrapper = $false
+    try { $throwType::Fail($message) }
+    catch [System.Management.Automation.RuntimeException] {
+        $caughtWrapper = $true
+        if ($_.Exception -isnot [System.Management.Automation.MethodInvocationException] -or
+            $_.Exception.InnerException.GetType() -ne [InvalidOperationException] -or
+            $_.Exception.InnerException.Message -cne $s.Detail) {
+            throw 'STOP: lowered string throw failed the RuntimeException wrapper-catch assertion.'
+        }
+    }
+    if (-not $caughtWrapper) { throw 'STOP: RuntimeException catch did not catch the lowered string throw.' }
+}
+
+$throwRejections = @(
+    "class RejectThrow { static [void] Fail([Exception] `$Value) { throw `$Value } }",
+    "class RejectThrow { static [void] Fail([System.Management.Automation.ErrorRecord] `$Value) { throw `$Value } }",
+    'class RejectThrow { static [void] Fail() { throw 42 } }',
+    'class RejectThrow { static [void] Fail() { try { throw ''first'' } catch { throw } } }',
+    "class RejectThrow { static [void] Fail() { throw 'first' }`n static [void] Other() { try { throw 'second' } catch [System.Management.Automation.RuntimeException] { } } }",
+    'class RejectThrow { static [void] Fail() { try { throw ''first'' } catch { $_.Exception.ErrorRecord } } }',
+    'class RejectThrow { static [void] Fail() { try { throw ''first'' } catch { $_ } } }',
+    'class RejectThrow { static [void] Fail() { try { throw ''first'' } catch { $Error } } }'
+)
+for ($caseIndex = 0; $caseIndex -lt $throwRejections.Count; $caseIndex++) {
+    $checked++
+    $rejectSource = Join-Path $outDir "RejectStringThrow$caseIndex.ps1"
+    $rejectOutput = Join-Path $outDir "RejectStringThrow$caseIndex.dll"
+    [IO.File]::WriteAllText($rejectSource, $throwRejections[$caseIndex])
+    $diagnostic = ''
+    try { & $compilerPath -SourcePath $rejectSource -OutputPath $rejectOutput -Deterministic | Out-Null }
+    catch { $diagnostic = $_.Exception.Message }
+    if (-not $diagnostic.Contains($rejectSource + ':') -or [IO.File]::Exists($rejectOutput)) {
+        $divergences.Add("String throw rejection $caseIndex failed: $diagnostic")
     }
 }
 
