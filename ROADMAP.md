@@ -140,8 +140,8 @@ under `dotnet exec`.
 
 ### 1.4 Console core gaps (from the admission report)
 Why: Pwsh ROADMAP R3. Remaining categories in `modules/Console.psm1`:
-- indexing into `List` (`get_Item`/`set_Item`) and `foreach` over
-  collections that are not arrays (5 + 4 methods, about 200 lines);
+- `foreach` over collections that are not arrays (4 methods). Indexing into
+  `List` and other .NET indexers is admitted (`tests/Test-Indexers.ps1`);
 - PowerShell's numeric promotion for mixed operand types, matched exactly
   and checked by the parity check (7 methods);
 - `if` used as a value, and the remaining expression forms (9 methods);

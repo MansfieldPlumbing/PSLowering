@@ -41,6 +41,7 @@ $testSuites = @(
     @{ Name = 'Semantics: Conversion Boundary';              Path = 'tests/Test-ConversionBoundary.ps1';       Args = @() }
     @{ Name = 'Architecture: Single Compiler File';          Path = 'tests/Test-SingleFileArchitecture.ps1'; Args = @() }
     @{ Name = 'Interop: Typed Calls and Native Callbacks';    Path = 'tests/Test-NativeInterop.ps1'; Args = @() }
+    @{ Name = 'Semantics: CLR Indexers';                      Path = 'tests/Test-Indexers.ps1'; Args = @() }
     @{ Name = 'Ratchet: Frozen Legacy Outputs';               Path = 'tests/Test-LegacyRatchet.ps1'; Args = @() }
 )
 

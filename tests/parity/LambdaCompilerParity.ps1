@@ -62,7 +62,10 @@ function Test-MethodParity {
         $msResult = $null
         $msError = $null
         try {
-            $msArguments = if ($lowered.HasThis) { [object[]](@($null) + $inputs) } else { $inputs }
+            # Assigned directly: an if-expression would unroll a one-element
+            # argument list, spreading a lone string[] argument into several.
+            $msArguments = [object[]]$inputs
+            if ($lowered.HasThis) { $msArguments = [object[]](@($null) + $inputs) }
             $msResult = $msDelegate.DynamicInvoke($msArguments)
         }
         catch {
@@ -218,6 +221,46 @@ Test-MethodParity -FixturePath $fix9 -ClassName 'VoiceRowIndexContract' -MethodN
     [object[]]@(0),
     [object[]]@(-5),
     [object[]]@(511)
+)
+
+# 5. CLR indexers: get_Item/set_Item calls, TryGetValue's out argument, default(T)
+$fixIndexer = Join-Path $repoRoot 'tests/fixtures/IndexerFixture.ps1'
+Test-MethodParity -FixturePath $fixIndexer -ClassName 'IndexerFixture' -MethodName 'ListReadWrite' -TestInputs @(
+    [object[]]@([int[]]@(1, 2, 3), 1),
+    [object[]]@([int[]]@(1, 2, 3), -1),
+    [object[]]@([int[]]@(1, 2, 3), 3)
+)
+Test-MethodParity -FixturePath $fixIndexer -ClassName 'IndexerFixture' -MethodName 'ListCompound' -TestInputs @(
+    [object[]]@(, [int[]]@(1, 2, 3)),
+    [object[]]@(, [int[]]@([int]::MaxValue))
+)
+Test-MethodParity -FixturePath $fixIndexer -ClassName 'IndexerFixture' -MethodName 'ListIncrementValue' -TestInputs @(
+    [object[]]@(, [int[]]@(7, 8))
+)
+Test-MethodParity -FixturePath $fixIndexer -ClassName 'IndexerFixture' -MethodName 'ListScanStarts' -TestInputs @(
+    [object[]]@([int[]]@(4, 1, 8, 3, 16), 3),
+    [object[]]@([int[]]@(), 1)
+)
+Test-MethodParity -FixturePath $fixIndexer -ClassName 'IndexerFixture' -MethodName 'InterfaceNegativeIndex' -TestInputs @(
+    [object[]]@(, [int[]]@(1, 2, 3))
+)
+Test-MethodParity -FixturePath $fixIndexer -ClassName 'IndexerFixture' -MethodName 'DictionaryReadWrite' -TestInputs @(
+    [object[]]@(, [string[]]@('a', 'b', 'a', 'c')),
+    [object[]]@(, [string[]]@())
+)
+Test-MethodParity -FixturePath $fixIndexer -ClassName 'IndexerFixture' -MethodName 'DictionaryCompound' -TestInputs @(
+    [object[]]@(, [string[]]@('a', 'b', 'a'))
+)
+Test-MethodParity -FixturePath $fixIndexer -ClassName 'IndexerFixture' -MethodName 'DictionaryOfString' -TestInputs @(
+    [object[]]@(1),
+    [object[]]@(9)
+)
+Test-MethodParity -FixturePath $fixIndexer -ClassName 'IndexerFixture' -MethodName 'StringIndex' -TestInputs @(
+    [object[]]@('abc', -1),
+    [object[]]@('abc', 3)
+)
+Test-MethodParity -FixturePath $fixIndexer -ClassName 'IndexerFixture' -MethodName 'ReadOnlyListIndex' -TestInputs @(
+    [object[]]@(, [int[]]@(3, 4, 5))
 )
 
 [pscustomobject]@{

@@ -116,8 +116,9 @@ A declared typed subset, exercised by the fixtures in `tests/fixtures`:
 - static and instance methods with zero or more typed parameters and typed
   returns, including `[void]`;
 - constants, typed locals, assignment, compound assignment (`+=`, `-=`, `*=`,
-  `/=`, `%=`) on variables, fields, properties and array elements, increment
-  and decrement;
+  `/=`, `%=`) on variables, fields, properties, array elements and indexer
+  elements, increment and decrement (`$x++`, and `$a[$i]++`, `--$a[$i]` on
+  array and indexer elements);
 - arithmetic, comparison and Boolean operators on operands of the same type,
   string concatenation with `+`, and the bitwise operators `-band`, `-bor`,
   `-bxor`, `-bnot`, `-shl` and `-shr`;
@@ -126,6 +127,17 @@ A declared typed subset, exercised by the fixtures in `tests/fixtures`:
 - typed arrays: creation, literals (typed by their target), indexing with
   PowerShell's negative indexes (`$a[-1]` is the last element), element
   assignment and `Length`;
+- reads and writes through a single-parameter .NET indexer on a reference
+  type (`List[T]`, `IList[T]`, `Dictionary[K,V]`, `ReadOnlyCollection[T]`,
+  `String`, or any type with a default member), with PowerShell's index
+  rules (SMA `PSGetIndexBinder` and `PSSetIndexBinder`): the index converts to
+  the indexer's parameter type; a negative `Int32` index counts from the end
+  on list-like types with `Count` or `Length`; a generic dictionary is read
+  through `TryGetValue`, so a missing key reads as the value type's default.
+  Assignment through a read-only indexer, indexing a value-type receiver
+  (`ArraySegment[T]`), slicing (`$x[0, 1]`) and a type without an indexer are
+  rejected (`tests/Test-Indexers.ps1`); indexers that take more than one
+  parameter are not admitted either;
 - calls to .NET static and instance methods, properties, constants and
   constructors, bound by exact signature;
 - `throw` and `try`/`catch`/`finally`;
@@ -152,13 +164,14 @@ running the original script.
 
 | Guarantee | Checked by |
 | --- | --- |
-| A compiled method returns what the same PowerShell method returns, or both throw | `tests/parity/PowerShellParity.ps1`: every fixture method run as PowerShell and as IL on the same inputs (221 calls) |
+| A compiled method returns what the same PowerShell method returns, or both throw | `tests/parity/PowerShellParity.ps1`: every fixture method run as PowerShell and as IL on the same inputs (334 calls) |
 | The emitter writes the IL the framework's own compiler would accept for the same tree | `tests/parity/LambdaCompilerParity.ps1`: the same trees compiled by `LambdaCompiler`, results compared |
 | Output references no `System.Management.Automation` type and no dynamic call site; its only assembly reference is `System.Private.CoreLib` | `tests/Test-ZeroSmaHost.ps1` |
 | The same input builds byte-identical assemblies with the same MVID | slices 1, 2, 4 and 5, which build twice and compare SHA-256 and MVID |
 | Output passes Pwsh's persisted-method admission | `tests/consumers/Test-PwshAdmission.ps1`: `Test-ExpressionGraph` from Pwsh's `setup.ps1` at a pinned commit and SHA-256 |
 | Compiled code runs with the `dotnet` host alone: no PowerShell engine assembly in the process | `tests/Test-DotnetHost.ps1`: a program compiled with `-EntryPoint Main` is run by `dotnet exec`, checks the loaded assemblies itself, and returns the expected exit codes |
 | Native imports call the native function with the declared marshalling | `tests/Test-NativeImports.ps1` (Windows): process ID, UTF-16 and UTF-8 string lengths and a tick count against .NET's own answers; invalid declarations rejected |
+| Indexing through .NET indexers compiles deterministically to CoreLib-only output, and indexing typed arrays still builds the frozen bytes | `tests/Test-Indexers.ps1` (PowerShell 7.7.0-preview.5, .NET 11.0.0-rc.1.26425.128): two `-Deterministic` builds compared byte for byte, `ClrOnlyAdmitted`, `List[int]` and `Dictionary[string,long]` read, write, compound and increment values, rejected forms, and `Slice6Fixture`, `ClassesFixture` and `LoopsFixture` against the SHA-256 in `tests/baseline/218f54e.json` |
 | The Kokoro `VoiceRowIndex` contract holds | `tests/Test-Slice9.ps1`: all counts 1-510, the out-of-range and Int32 extremes, the exception's parameter name |
 
 ## Semantics
@@ -175,9 +188,17 @@ running the original script.
   invariant culture, ignoring case unless the operator is case-sensitive
   (`-ceq` and so on).
 
-Known difference: an integral expression that overflows but is never stored
-in or returned as a typed value throws in compiled code, while PowerShell
-continues with a `Double`.
+Known differences:
+
+- An integral expression that overflows but is never stored in or returned
+  as a typed value throws in compiled code, while PowerShell continues with a
+  `Double`.
+- An out-of-range index read throws (`IndexOutOfRangeException` for arrays,
+  `ArgumentOutOfRangeException` for indexers such as `List[T]`), while
+  PowerShell outside `Set-StrictMode -Version 3` returns `$null`.
+- A dictionary read of a missing key with a `[string]` value type yields
+  `$null`; PowerShell also yields `$null`, but converts it to `''` when it is
+  returned as or stored in a `[string]`, and compiled code does not.
 
 ## Verification
 
@@ -185,7 +206,7 @@ continues with a `Double`.
 pwsh -NoLogo -NoProfile -File ./tests/Test-ConsolidatedRunner.ps1
 ```
 
-The runner executes 22 suites (19 legacy suites plus three regression gates), each in its own process, on the one pinned
+The runner executes 23 suites (19 legacy suites, three regression gates and the indexer suite), each in its own process, on the one pinned
 PowerShell: 7.7.0-preview.5 with .NET 11.0.0-rc.1.26425.128.
 `tools/Get-PowerShell.ps1` downloads it (or takes `-ArchivePath` to a copy
 already downloaded), checks the SHA-256 GitHub publishes for the release
