@@ -121,3 +121,19 @@ V ObjectConversionFixture.ps1 ObjectConversionFixture ToByte    @(@(5), @(300), 
 V ObjectConversionFixture.ps1 ObjectConversionFixture ToChar    @(@(65), @('A'), @('AB'))
 V ObjectConversionFixture.ps1 ObjectConversionFixture TextToInt @(@('42'), @('-7'), @('x'))
 V ObjectConversionFixture.ps1 ObjectConversionFixture SumBoxed  @(@(, [object[]]@(1, [long]2, 2.5)), @(, [object[]]@()))
+
+# CLR indexers: List, IList, Dictionary, String, ReadOnlyCollection; negative
+# indexes, index conversion, compound assignment, ++ and --, missing keys
+V IndexerFixture.ps1 IndexerFixture ListReadWrite          @(@([int[]]@(1, 2, 3), 1), @([int[]]@(1, 2, 3), -1), @([int[]]@(4), 0), @([int[]]@($max, 1), 0))
+V IndexerFixture.ps1 IndexerFixture ListCompound           @(@(, [int[]]@(1, 2, 3)), @(, [int[]]@(0)), @(, [int[]]@($max)))
+V IndexerFixture.ps1 IndexerFixture ListIncrementValue     @(@(, [int[]]@(7, 8)), @(, [int[]]@(-1)))
+V IndexerFixture.ps1 IndexerFixture ListScanStarts         @(@([int[]]@(4, 1, 8, 3, 16), 3), @([int[]]@(), 1), @([int[]]@(1, 3, 5), 1))
+V IndexerFixture.ps1 IndexerFixture ListIndexConversion    @(@([int[]]@(5, 6, 7), 1.5), @([int[]]@(5, 6, 7), 0.5), @([int[]]@(5, 6, 7), -1.0), @([int[]]@(5, 6, 7), 2.4999))
+V IndexerFixture.ps1 IndexerFixture InterfaceNegativeIndex @(@(, [int[]]@(1, 2, 3)), @(, [int[]]@(9, 0)))
+V IndexerFixture.ps1 IndexerFixture ListOfDouble           @(@(0), @(4))
+V IndexerFixture.ps1 IndexerFixture DictionaryReadWrite    @(@(, [string[]]@('a', 'b', 'a', 'c')), @(, [string[]]@()), @(, [string[]]@('A', 'a')))
+V IndexerFixture.ps1 IndexerFixture DictionaryCompound     @(@(, [string[]]@('a', 'b', 'a')), @(, [string[]]@()))
+V IndexerFixture.ps1 IndexerFixture DictionaryOfString     @(@(1), @(2))
+V IndexerFixture.ps1 IndexerFixture StringIndex            @(@('abc', 0), @('abc', -1), @('abc', 2))
+V IndexerFixture.ps1 IndexerFixture ReadOnlyListIndex      @(@(, [int[]]@(3, 4, 5)), @(, [int[]]@(6)))
+V IndexerFixture.ps1 IndexerFixture ArrayElementIncrement  @(@(, [int[]]@(1, 2, 3)), @(, [int[]]@(5)))

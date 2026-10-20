@@ -756,6 +756,259 @@ function New-PowerShellArrayIndex {
     [pscustomobject]@{ Setup = $setup; Access = [Linq.Expressions.Expression]::ArrayAccess($Array, $adjusted) }
 }
 
+function Get-ClrIndexerProperties([Type] $Type) {
+    # The indexer PowerShell's index binders call: the default member named by
+    # the type's DefaultMemberAttribute or, when the type has none, by an
+    # interface it implements (an explicitly implemented interface indexer does
+    # not carry the attribute to the class). PSGetIndexBinder.FallbackGetIndex.
+    foreach ($owner in @($Type) + @($Type.GetInterfaces())) {
+        $default = [Attribute]::GetCustomAttribute($owner, [Reflection.DefaultMemberAttribute], $true)
+        if (-not $default) { continue }
+        $found = @($owner.GetProperties([Reflection.BindingFlags]'Public, Instance') |
+            Where-Object { $_.Name -ceq $default.MemberName -and $_.GetIndexParameters().Count -gt 0 })
+        if ($found.Count) { return , $found }
+    }
+    , @()
+}
+
+function Get-ClrLengthProperty([Type] $Type, [string[]] $Names) {
+    # A public Int32 Count or Length on the type or an interface it implements
+    # (an interface type such as IList[T] inherits Count from ICollection[T]).
+    foreach ($name in $Names) {
+        foreach ($owner in @($Type) + @($Type.GetInterfaces())) {
+            $property = $owner.GetProperty($name, [Reflection.BindingFlags]'Public, Instance', $null, [int], [Type[]]@(), $null)
+            if ($property -and $property.GetGetMethod()) { return $property }
+        }
+    }
+    $null
+}
+
+function Test-ClrIndexFromEnd([Type] $Type, [Reflection.MethodInfo] $Getter) {
+    # PSGetIndexBinder.CanIndexFromEndWithNegativeIndex on the static type: an
+    # Int32 index that is not a type argument of a generic type (ILookup's key
+    # can be negative), or any list-like type.
+    $parameters = $Getter.GetParameters()
+    if ($parameters.Count -ne 1 -or $parameters[0].ParameterType -ne [int]) { return $false }
+    if ($Type -eq [string] -or $Type -eq [Text.StringBuilder]) { return $true }
+    if ([Collections.IList].IsAssignableFrom($Type)) { return $true }
+    if ([Collections.Specialized.OrderedDictionary].IsAssignableFrom($Type)) { return $true }
+    foreach ($candidate in @($Type) + @($Type.GetInterfaces())) {
+        if ($candidate.IsGenericType -and $candidate.GetGenericTypeDefinition() -eq [Collections.Generic.IList`1]) { return $true }
+    }
+    $definition = $Getter.Module.ResolveMethod($Getter.MetadataToken)
+    -not $definition.GetParameters()[0].ParameterType.IsGenericParameter
+}
+
+function New-ClrIndexerAccess {
+    <#
+    .SYNOPSIS
+        Element access through a CLR indexer, with PowerShell's index rules.
+    .DESCRIPTION
+        Follows PSGetIndexBinder and PSSetIndexBinder (SMA 7.7.0-preview.5) on
+        the static type. The indexer is the default member; the index converts
+        to its parameter type. A negative Int32 index counts from the end on a
+        type with a Count or Length property. A generic dictionary is read
+        through IDictionary[K,V].TryGetValue, so a missing key reads as the
+        value type's default ($null for a reference type), and written through
+        its indexer. Access is Get, Set, or Update (read, then write the same
+        element: compound assignment, ++ and --); the receiver and index are
+        evaluated once. Returns the setup expressions, the read expression
+        (Get, Update), a writer that builds the store of a value (Set,
+        Update), and the element type.
+    #>
+    param(
+        [Parameter(Mandatory)][System.Management.Automation.Language.IndexExpressionAst] $Node,
+        [Parameter(Mandatory)][Linq.Expressions.Expression] $Target,
+        [Parameter(Mandatory)][ValidateSet('Get', 'Set', 'Update')][string] $Access,
+        [Parameter(Mandatory)][hashtable] $Scope
+    )
+    $et = [Linq.Expressions.Expression]
+    $type = $Target.Type
+    $line = $Node.Extent.StartLineNumber
+    $column = $Node.Extent.StartColumnNumber
+    $properties = Get-ClrIndexerProperties $type
+    if ($properties.Count -eq 0) {
+        throw "[{0}:{1}] Type '{2}' has no indexer." -f $line, $column, $type.FullName
+    }
+    if ($type.IsValueType) {
+        # An instance call on a value type needs the receiver's address; member
+        # access on a value-type receiver is not lowered correctly yet.
+        throw "[{0}:{1}] Indexing a value of value type '{2}' is not supported." -f $line, $column, $type.FullName
+    }
+    if ($Node.Index -is [System.Management.Automation.Language.ArrayLiteralAst]) {
+        $count = $Node.Index.Elements.Count
+        if (@($properties | Where-Object { $_.GetIndexParameters().Count -eq $count }).Count) {
+            throw "[{0}:{1}] The indexer of '{2}' with {3} parameters is not supported; only single-parameter indexers are." -f $line, $column, $type.FullName, $count
+        }
+        throw "[{0}:{1}] Indexing '{2}' with {3} indexes (slicing) is not supported." -f $line, $column, $type.FullName, $count
+    }
+    $single = @($properties | Where-Object { $_.GetIndexParameters().Count -eq 1 })
+    if ($single.Count -eq 0) {
+        throw "[{0}:{1}] The indexer of '{2}' takes {3} parameters; only single-parameter indexers are supported." -f $line, $column, $type.FullName, $properties[0].GetIndexParameters().Count
+    }
+    if ($single.Count -eq 1) {
+        $property = $single[0]
+        $index = Convert-AstExpressionAs -Node $Node.Index -Type $property.GetIndexParameters()[0].ParameterType -Scope $Scope
+    }
+    else {
+        $index = Convert-AstExpression -Node $Node.Index -Scope $Scope
+        $exact = @($single | Where-Object { $_.GetIndexParameters()[0].ParameterType -eq $index.Type })
+        if ($exact.Count -ne 1) {
+            throw "[{0}:{1}] An index of type '{2}' does not select one indexer of '{3}' (it has {4}, taking {5})." -f `
+                $line, $column, $index.Type.FullName, $type.FullName, $single.Count, (($single | ForEach-Object { $_.GetIndexParameters()[0].ParameterType.Name }) -join ', ')
+        }
+        $property = $exact[0]
+    }
+    $indexType = $property.GetIndexParameters()[0].ParameterType
+    $elementType = $property.PropertyType
+    if ($elementType.IsByRef -or $elementType.IsByRefLike -or $indexType.IsByRef -or $indexType.IsByRefLike) {
+        throw "[{0}:{1}] The indexer of '{2}' returns or takes a by-reference type, which is not supported." -f $line, $column, $type.FullName
+    }
+    $getter = $property.GetGetMethod()
+    $setter = $property.GetSetMethod()
+    if ($Access -ne 'Get' -and -not $setter) {
+        throw "[{0}:{1}] The indexer of '{2}' is read-only." -f $line, $column, $type.FullName
+    }
+
+    # A generic dictionary is read through TryGetValue (GetIndexDictionary).
+    $dictionary = $null
+    if ($Access -ne 'Set') {
+        $dictionaries = @(@($type) + @($type.GetInterfaces()) | Where-Object {
+            $_.IsInterface -and $_.IsGenericType -and $_.GetGenericTypeDefinition() -eq [Collections.Generic.IDictionary`2] } | Select-Object -Unique)
+        if ($dictionaries.Count -gt 1) {
+            throw "[{0}:{1}] '{2}' implements more than one generic dictionary interface; its index is ambiguous." -f $line, $column, $type.FullName
+        }
+        if ($dictionaries.Count -eq 1) { $dictionary = $dictionaries[0] }
+    }
+    if ($Access -ne 'Set' -and -not $dictionary -and -not $getter) {
+        throw "[{0}:{1}] The indexer of '{2}' is write-only." -f $line, $column, $type.FullName
+    }
+
+    $readIndex = $index
+    if ($dictionary) {
+        $keyType = $dictionary.GetGenericArguments()[0]
+        if ($keyType -ne $index.Type) { $readIndex = ConvertTo-PowerShellType -Expression $index -Type $keyType }
+    }
+    $fromEnd = $index.Type -eq [int] -and -not ($index -is [Linq.Expressions.ConstantExpression] -and [int]$index.Value -ge 0)
+    $readLength = if ($fromEnd -and $Access -ne 'Set' -and -not $dictionary -and (Test-ClrIndexFromEnd $type $getter)) {
+        Get-ClrLengthProperty $type 'Count', 'Length'
+    }
+    $writeLength = if ($fromEnd -and $Access -ne 'Get' -and -not [Collections.IDictionary].IsAssignableFrom($type) -and $setter.GetParameters()[0].ParameterType -eq [int]) {
+        Get-ClrLengthProperty $type 'Length', 'Count'
+    }
+
+    $setup = [System.Collections.Generic.List[Linq.Expressions.Expression]]::new()
+    $id = $Scope.DeclaredLocals.Count
+    $receiver = $Target
+    $reuse = $Access -eq 'Update' -or $readLength -or $writeLength
+    if ($receiver -isnot [Linq.Expressions.ParameterExpression] -and $reuse) {
+        $receiverTemp = $et::Variable($type, "indexTarget$id")
+        $Scope.DeclaredLocals.Add($receiverTemp)
+        $setup.Add($et::Assign($receiverTemp, $receiver))
+        $receiver = $receiverTemp
+    }
+    if ($reuse -and $index -isnot [Linq.Expressions.ParameterExpression] -and $index -isnot [Linq.Expressions.ConstantExpression]) {
+        $indexTemp = $et::Variable($index.Type, "indexValue$id")
+        $Scope.DeclaredLocals.Add($indexTemp)
+        $setup.Add($et::Assign($indexTemp, $index))
+        if ($readIndex -eq $index) { $readIndex = $indexTemp }
+        elseif ($dictionary) { $readIndex = ConvertTo-PowerShellType -Expression $indexTemp -Type $dictionary.GetGenericArguments()[0] }
+        $index = $indexTemp
+    }
+    $writeIndex = $index
+    if ($readLength -or $writeLength) {
+        # index < 0 ? index + Count : index, as PSGetIndexBinder.IndexWithNegativeChecks.
+        $lengthProperty = if ($readLength) { $readLength } else { $writeLength }
+        $adjusted = $et::Condition($et::LessThan($index, $et::Constant(0)), $et::Add($index, $et::Property($receiver, $lengthProperty)), $index)
+        if ($Access -eq 'Update' -and $readLength -and $writeLength -and $readLength -eq $writeLength) {
+            $adjustedTemp = $et::Variable([int], "indexAdjusted$id")
+            $Scope.DeclaredLocals.Add($adjustedTemp)
+            $setup.Add($et::Assign($adjustedTemp, $adjusted))
+            $adjusted = $adjustedTemp
+        }
+        if ($readLength) { $readIndex = $adjusted }
+        if ($writeLength) {
+            $writeIndex = if ($readLength -eq $writeLength) { $adjusted }
+                          else { $et::Condition($et::LessThan($index, $et::Constant(0)), $et::Add($index, $et::Property($receiver, $writeLength)), $index) }
+        }
+    }
+
+    $read = $null
+    if ($Access -ne 'Set') {
+        if ($dictionary) {
+            $valueType = $dictionary.GetGenericArguments()[1]
+            $found = $et::Variable($valueType, "indexFound$id")
+            $Scope.DeclaredLocals.Add($found)
+            $tryGetValue = $dictionary.GetMethod('TryGetValue')
+            $read = $et::Condition($et::Call($receiver, $tryGetValue, [Linq.Expressions.Expression[]]@($readIndex, $found)), $found, $et::Default($valueType))
+        }
+        else {
+            $read = $et::Property($receiver, $property, [Linq.Expressions.Expression[]]@($readIndex))
+        }
+    }
+    $element = $null
+    if ($Access -ne 'Get') {
+        $writeKey = if ($writeIndex.Type -eq $indexType) { $writeIndex } else { ConvertTo-PowerShellType -Expression $writeIndex -Type $indexType }
+        $element = $et::Property($receiver, $property, [Linq.Expressions.Expression[]]@($writeKey))
+    }
+    [pscustomobject]@{ Setup = $setup; Read = $read; Element = $element; ElementType = $elementType }
+}
+
+function New-ClrIndexerUpdate {
+    <#
+    .SYNOPSIS
+        Reads an element, combines it with a value and stores the result back:
+        compound assignment ($x[$i] += $v) and increment or decrement
+        ($x[$i]++, --$x[$i]) on an array or a CLR indexer. The value of the
+        whole expression is the stored value, or for postfix ++ and -- the
+        value read.
+    #>
+    param(
+        [Parameter(Mandatory)][System.Management.Automation.Language.IndexExpressionAst] $Node,
+        [Parameter(Mandatory)][string] $Operator,
+        [System.Management.Automation.Language.Ast] $Right,
+        [switch] $Postfix,
+        [Parameter(Mandatory)][System.Management.Automation.Language.Ast] $Statement,
+        [Parameter(Mandatory)][hashtable] $Scope,
+        # The converted $Node.Target, when the caller has already converted it.
+        [Linq.Expressions.Expression] $Target
+    )
+    $et = [Linq.Expressions.Expression]
+    $target = if ($Target) { $Target } else { Convert-AstExpression -Node $Node.Target -Scope $Scope }
+    if ($target.Type.IsArray) {
+        if ($target.Type.GetArrayRank() -ne 1) {
+            throw "[{0}:{1}] Compound assignment into non-array type '{2}' is not supported." -f $Statement.Extent.StartLineNumber, $Statement.Extent.StartColumnNumber, $target.Type.FullName
+        }
+        $array = New-PowerShellArrayIndex -Array $target -Index (Convert-AstExpression -Node $Node.Index -Scope $Scope) -Scope $Scope
+        $access = [pscustomobject]@{ Setup = $array.Setup; Read = $array.Access; Element = $array.Access; ElementType = $array.Access.Type }
+    }
+    else {
+        $access = New-ClrIndexerAccess -Node $Node -Target $target -Access Update -Scope $Scope
+    }
+    $setup = $access.Setup
+    $current = $et::Variable($access.Read.Type, "indexCurrent$($Scope.DeclaredLocals.Count)")
+    $Scope.DeclaredLocals.Add($current)
+    $setup.Add($et::Assign($current, $access.Read))
+    $operand = if ($Right) { Convert-AstExpression -Node $Right -Scope $Scope } else { $et::Constant([Convert]::ChangeType(1, $current.Type), $current.Type) }
+    if ($operand.Type -ne $current.Type) {
+        throw "[{0}:{1}] Compound assignment '{2}' requires identical operand types, got '{3}' and '{4}'." -f `
+            $Statement.Extent.StartLineNumber, $Statement.Extent.StartColumnNumber, $Statement.Operator, $current.Type.FullName, $operand.Type.FullName
+    }
+    $combined = ConvertTo-PowerShellType -Expression (New-PowerShellArithmetic -Operator $Operator -Left $current -Right $operand) -Type $access.ElementType
+    if ($Postfix) {
+        $setup.Add($et::Assign($access.Element, $combined))
+        $setup.Add($current)
+    }
+    else {
+        $stored = $et::Variable($access.ElementType, "indexStored$($Scope.DeclaredLocals.Count)")
+        $Scope.DeclaredLocals.Add($stored)
+        $setup.Add($et::Assign($stored, $combined))
+        $setup.Add($et::Assign($access.Element, $stored))
+        $setup.Add($stored)
+    }
+    $et::Block([Linq.Expressions.Expression[]]$setup.ToArray())
+}
+
 function Convert-AstExpressionAs {
     param(
         [Parameter(Mandatory)][System.Management.Automation.Language.Ast] $Node,
@@ -1040,6 +1293,12 @@ function Convert-AstExpression {
 
     # 7. Unary arithmetic expressions: -$x, ++$x, --$x, $x++, $x--
     if ($Node -is [System.Management.Automation.Language.UnaryExpressionAst]) {
+        # An element: $x[$i]++, --$x[$i] (prefix tokens are PlusPlus and MinusMinus).
+        if ($Node.TokenKind -in 'PostfixPlusPlus', 'PlusPlus', 'PostfixMinusMinus', 'MinusMinus' -and
+            $Node.Child -is [System.Management.Automation.Language.IndexExpressionAst]) {
+            $operator = if ($Node.TokenKind -in 'PostfixPlusPlus', 'PlusPlus') { 'Plus' } else { 'Minus' }
+            return New-ClrIndexerUpdate -Node $Node.Child -Operator $operator -Postfix:($Node.TokenKind -like 'Postfix*') -Statement $Node -Scope $Scope
+        }
         if ($Node.TokenKind -in 'PostfixPlusPlus', 'PrefixPlusPlus', 'PostfixMinusMinus', 'PrefixMinusMinus') {
             $target = Convert-AstExpression -Node $Node.Child -Scope $Scope
             $one = [Linq.Expressions.Expression]::Constant(1, $target.Type)
@@ -1155,19 +1414,25 @@ function Convert-AstExpression {
         }
     }
 
-    # 9. Array index read: $arr[$i]
+    # 9. Index read: $arr[$i] on a typed array, $x[$i] through a CLR indexer
     if ($Node -is [System.Management.Automation.Language.IndexExpressionAst]) {
         $targetExpr = Convert-AstExpression -Node $Node.Target -Scope $Scope
-        $idxExpr = Convert-AstExpression -Node $Node.Index -Scope $Scope
-        if ($targetExpr.Type.IsArray -and $targetExpr.Type.GetArrayRank() -eq 1) {
+        if ($targetExpr.Type.IsArray) {
+            $idxExpr = Convert-AstExpression -Node $Node.Index -Scope $Scope
+            if ($targetExpr.Type.GetArrayRank() -ne 1) {
+                throw "[{0}:{1}] Indexing into non-array type '{2}' is not supported." -f `
+                    $Node.Extent.StartLineNumber, $Node.Extent.StartColumnNumber, $targetExpr.Type.FullName
+            }
             $element = New-PowerShellArrayIndex -Array $targetExpr -Index $idxExpr -Scope $Scope
             $read = [Linq.Expressions.Expression]::ArrayIndex($element.Access.Object, $element.Access.Arguments[0])
             if ($element.Setup.Count -eq 0) { return $read }
             $element.Setup.Add($read)
             return [Linq.Expressions.Expression]::Block($read.Type, [Linq.Expressions.Expression[]]$element.Setup.ToArray())
         }
-        throw "[{0}:{1}] Indexing into non-array type '{2}' is not supported." -f `
-            $Node.Extent.StartLineNumber, $Node.Extent.StartColumnNumber, $targetExpr.Type.FullName
+        $access = New-ClrIndexerAccess -Node $Node -Target $targetExpr -Access Get -Scope $Scope
+        if ($access.Setup.Count -eq 0) { return $access.Read }
+        $access.Setup.Add($access.Read)
+        return [Linq.Expressions.Expression]::Block($access.Read.Type, [Linq.Expressions.Expression[]]$access.Setup.ToArray())
     }
 
     # 10. Invoke Member Expression: [T]::Method(...) or $inst.Method(...) or [T]::new(...)
@@ -1418,7 +1683,11 @@ function Convert-AstStatement {
                 # The array and index are evaluated once, then the element is read,
                 # combined and stored back.
                 $arrayExpr = Convert-AstExpression -Node $leftNode.Target -Scope $Scope
-                if (-not $arrayExpr.Type.IsArray -or $arrayExpr.Type.GetArrayRank() -ne 1) {
+                if (-not $arrayExpr.Type.IsArray) {
+                    $update = New-ClrIndexerUpdate -Node $leftNode -Operator $compound -Right $Statement.Right -Statement $Statement -Scope $Scope -Target $arrayExpr
+                    return [Linq.Expressions.Expression]::Block($update, [Linq.Expressions.Expression]::Empty())
+                }
+                if ($arrayExpr.Type.GetArrayRank() -ne 1) {
                     throw "[{0}:{1}] Compound assignment into non-array type '{2}' is not supported." -f $Statement.Extent.StartLineNumber, $Statement.Extent.StartColumnNumber, $arrayExpr.Type.FullName
                 }
                 $element = New-PowerShellArrayIndex -Array $arrayExpr -Index (Convert-AstExpression -Node $leftNode.Index -Scope $Scope) -Scope $Scope
@@ -1448,14 +1717,19 @@ function Convert-AstStatement {
             return [Linq.Expressions.Expression]::Assign($target, (ConvertTo-PowerShellType -Expression $value -Type $target.Type))
         }
 
-        # Array element assignment: $arr[$i] = <expr>
+        # Element assignment: $arr[$i] = <expr>, or $x[$i] = <expr> through a CLR indexer
         if ($leftNode -is [System.Management.Automation.Language.IndexExpressionAst]) {
             $targetExpr = Convert-AstExpression -Node $leftNode.Target -Scope $Scope
-            $idxExpr = Convert-AstExpression -Node $leftNode.Index -Scope $Scope
             if (-not $targetExpr.Type.IsArray) {
-                throw "[{0}:{1}] Cannot assign into non-array type '{2}'." -f `
-                    $Statement.Extent.StartLineNumber, $Statement.Extent.StartColumnNumber, $targetExpr.Type.FullName
+                $access = New-ClrIndexerAccess -Node $leftNode -Target $targetExpr -Access Set -Scope $Scope
+                $value = Convert-AstExpressionAs -Node $Statement.Right -Type $access.ElementType -Scope $Scope
+                $store = [Linq.Expressions.Expression]::Assign($access.Element, $value)
+                if ($access.Setup.Count -eq 0) { return $store }
+                $access.Setup.Add($store)
+                $access.Setup.Add([Linq.Expressions.Expression]::Empty())
+                return [Linq.Expressions.Expression]::Block([Linq.Expressions.Expression[]]$access.Setup.ToArray())
             }
+            $idxExpr = Convert-AstExpression -Node $leftNode.Index -Scope $Scope
             $elemType = $targetExpr.Type.GetElementType()
             $element = New-PowerShellArrayIndex -Array $targetExpr -Index $idxExpr -Scope $Scope
             $valExpr = Convert-AstExpressionAs -Node $Statement.Right -Type $elemType -Scope $Scope
@@ -2296,6 +2570,30 @@ function Write-IlArrayStore([Reflection.Emit.ILGenerator]$IL, [Type]$ElementType
     $IL.Emit([Reflection.Emit.OpCodes]::Stelem, (Get-IlType $ElementType))
 }
 
+function Write-IlAddress([Reflection.Emit.ILGenerator]$IL, [Linq.Expressions.Expression]$Expr, [hashtable]$Context) {
+    # The address of a local or parameter, passed as a ref or out argument.
+    if ($Expr -is [Linq.Expressions.ParameterExpression]) {
+        if ($Context.Locals.ContainsKey($Expr)) {
+            $loc = $Context.Locals[$Expr]
+            $op = if ($loc.LocalIndex -le 255) { [Reflection.Emit.OpCodes]::Ldloca_S } else { [Reflection.Emit.OpCodes]::Ldloca }
+            $IL.Emit($op, $loc)
+            return
+        }
+        if ($Context.Parameters.ContainsKey($Expr)) {
+            $index = $Context.Parameters[$Expr]
+            if ($index -le 255) { $IL.Emit([Reflection.Emit.OpCodes]::Ldarga_S, [byte]$index) }
+            else { $IL.Emit([Reflection.Emit.OpCodes]::Ldarga, [int16]$index) }
+            return
+        }
+    }
+    throw "Cannot take the address of '$($Expr.NodeType)' expression."
+}
+
+function Write-IlCall([Reflection.Emit.ILGenerator]$IL, [Reflection.MethodInfo]$Method) {
+    $op = if ($Method.IsVirtual -and -not $Method.DeclaringType.IsValueType) { [Reflection.Emit.OpCodes]::Callvirt } else { [Reflection.Emit.OpCodes]::Call }
+    $IL.Emit($op, (Get-IlMember $Method))
+}
+
 function Write-IlConstant {
     param(
         [Parameter(Mandatory)][Reflection.Emit.ILGenerator] $IL,
@@ -2555,7 +2853,12 @@ function Write-IlExpression {
         if ($Expr.Type -eq [long]) { $IL.Emit([Reflection.Emit.OpCodes]::Ldc_I8, [long]0); return }
         if ($Expr.Type -eq [double]) { $IL.Emit([Reflection.Emit.OpCodes]::Ldc_R8, [double]0.0); return }
         if (-not $Expr.Type.IsValueType) { $IL.Emit([Reflection.Emit.OpCodes]::Ldnull); return }
-        throw "Unsupported default value type '$($Expr.Type.FullName)'."
+        # Any other value type: a zero-initialized local, as LambdaCompiler.EmitDefault.
+        $zero = $IL.DeclareLocal((Get-IlType $Expr.Type))
+        $IL.Emit([Reflection.Emit.OpCodes]::Ldloca, $zero)
+        $IL.Emit([Reflection.Emit.OpCodes]::Initobj, (Get-IlType $Expr.Type))
+        $IL.Emit([Reflection.Emit.OpCodes]::Ldloc, $zero)
+        return
     }
 
     # 7. Unary Convert
@@ -2648,8 +2951,11 @@ function Write-IlExpression {
         if ($Expr.Object) {
             Write-IlExpression -IL $IL -Expr $Expr.Object -Context $Context
         }
-        foreach ($arg in $Expr.Arguments) {
-            Write-IlExpression -IL $IL -Expr $arg -Context $Context
+        $parameters = $Expr.Method.GetParameters()
+        for ($i = 0; $i -lt $Expr.Arguments.Count; $i++) {
+            # A ref or out argument passes the variable's address.
+            if ($parameters[$i].ParameterType.IsByRef) { Write-IlAddress -IL $IL -Expr $Expr.Arguments[$i] -Context $Context; continue }
+            Write-IlExpression -IL $IL -Expr $Expr.Arguments[$i] -Context $Context
         }
         if ($Expr.Method.IsVirtual -and -not $Expr.Method.DeclaringType.IsValueType) {
             $IL.Emit([Reflection.Emit.OpCodes]::Callvirt, (Get-IlMember $Expr.Method))
@@ -2664,6 +2970,14 @@ function Write-IlExpression {
         Write-IlExpression -IL $IL -Expr $Expr.Object -Context $Context
         Write-IlExpression -IL $IL -Expr $Expr.Arguments[0] -Context $Context
         Write-IlArrayLoad -IL $IL -ElementType $Expr.Type
+        return
+    }
+
+    # 9.4 Element read through a CLR indexer (IndexExpression with an indexer property)
+    if ($Expr -is [Linq.Expressions.IndexExpression] -and $null -ne $Expr.Indexer) {
+        Write-IlExpression -IL $IL -Expr $Expr.Object -Context $Context
+        foreach ($arg in $Expr.Arguments) { Write-IlExpression -IL $IL -Expr $arg -Context $Context }
+        Write-IlCall -IL $IL -Method $Expr.Indexer.GetGetMethod()
         return
     }
 
@@ -2740,8 +3054,9 @@ function Write-IlExpression {
         $IL.Emit([Reflection.Emit.OpCodes]::Brfalse, $lblFalse)
         Write-IlExpression -IL $IL -Expr $Expr.IfTrue -Context $Context
 
-        $hasFalseBranch = ($Expr.IfFalse -and $Expr.IfFalse.NodeType -ne [Linq.Expressions.ExpressionType]::Default -and $Expr.IfFalse.Type -ne [void]) -or
-                          ($Expr.IfFalse -and $Expr.IfFalse.NodeType -ne [Linq.Expressions.ExpressionType]::Default)
+        # Only an empty else (IfThen's void Default) has no branch; a typed
+        # Default (cond ? x : default(T)) pushes its value.
+        $hasFalseBranch = $Expr.IfFalse -and -not ($Expr.IfFalse.NodeType -eq [Linq.Expressions.ExpressionType]::Default -and $Expr.IfFalse.Type -eq [void])
 
         if ($hasFalseBranch) {
             $IL.Emit([Reflection.Emit.OpCodes]::Br, $lblEnd)
@@ -2795,6 +3110,13 @@ function Write-IlExpression {
                     Write-IlArgumentStore -IL $IL -Index $Context.Parameters[$Expr.Left]
                     return
                 }
+            }
+            if ($Expr.Left -is [Linq.Expressions.IndexExpression] -and $null -ne $Expr.Left.Indexer) {
+                Write-IlExpression -IL $IL -Expr $Expr.Left.Object -Context $Context
+                foreach ($arg in $Expr.Left.Arguments) { Write-IlExpression -IL $IL -Expr $arg -Context $Context }
+                Write-IlExpression -IL $IL -Expr $Expr.Right -Context $Context
+                Write-IlCall -IL $IL -Method $Expr.Left.Indexer.GetSetMethod()
+                return
             }
             if ($Expr.Left -is [Linq.Expressions.IndexExpression]) {
                 Write-IlExpression -IL $IL -Expr $Expr.Left.Object -Context $Context
