@@ -1,0 +1,16 @@
+[
+  {
+    "Repository": "Pwsh",
+    "Commit": "3110a85a63a48b2dc1500364cb508d06f3ea3f91",
+    "Path": "lib/jni.h",
+    "GitBlob": "8346ca4e5f141deae70daf62314a8b34c4e5dc82",
+    "SHA256": "C88CE2CB6CE10378CD4C706A3A2AD017794AEDB9314DDCC341E39B470CDB601A"
+  },
+  {
+    "Repository": "Pwsh",
+    "Commit": "3110a85a63a48b2dc1500364cb508d06f3ea3f91",
+    "Path": "lib/native_activity.h",
+    "GitBlob": "d3d99cf7a9b95edac0bc19a48989a60b808e2b2b",
+    "SHA256": "04F85D119FC222ABD65AEF1F57F8E03A94134C272B95ED781E8F3791C64D973A"
+  }
+]

@@ -1,0 +1,238 @@
+{
+  "Kind": "Consumer observation; not a golden baseline",
+  "CompilerCommit": "3b68b12f062da5edc58c444122c1b58ecdfb5ed1",
+  "CompilerSHA256": "674BAD3FE0610DBEA6D4D62E336F66B1D0BBAEF65B3C6A34CA9F7D43AA47C86B",
+  "QuickPSCommit": "f1b1c9083d448c3ee893f878122de758849d4022",
+  "PwshCommit": "3110a85a63a48b2dc1500364cb508d06f3ea3f91",
+  "Windows": {
+    "PowerShell": "7.7.0-preview.5",
+    "SMA": "7.7.0-preview.5 SHA: 149ab5cd6cad34869177f86ef9a3da8414f85dc6+149ab5cd6cad34869177f86ef9a3da8414f85dc6",
+    "CoreLib": "11.0.0-rc.1.26425.128+3551975be08744f0418857c5bed8ab1545c5dd47",
+    "ComApartment": "STA",
+    "CoInitializeResult": 1,
+    "CompileMilliseconds": 591.7641,
+    "ParityComparisons": 12,
+    "ZeroSmaHost": true,
+    "Admission": [
+      {
+        "Source": "MediaSessionEvents",
+        "Admitted": true,
+        "Milliseconds": 3132.5141,
+        "Diagnostic": null,
+        "Methods": 3
+      },
+      {
+        "Source": "AudioCapture",
+        "Admitted": true,
+        "Milliseconds": 3112.0457,
+        "Diagnostic": null,
+        "Methods": 2
+      }
+    ],
+    "Timings": [
+      {
+        "Side": "PowerShell",
+        "Sample": 1,
+        "Iterations": 1000,
+        "Milliseconds": 144.7929
+      },
+      {
+        "Side": "PowerShell",
+        "Sample": 2,
+        "Iterations": 1000,
+        "Milliseconds": 142.0117
+      },
+      {
+        "Side": "PowerShell",
+        "Sample": 3,
+        "Iterations": 1000,
+        "Milliseconds": 172.1849
+      },
+      {
+        "Side": "PowerShell",
+        "Sample": 4,
+        "Iterations": 1000,
+        "Milliseconds": 233.6017
+      },
+      {
+        "Side": "PowerShell",
+        "Sample": 5,
+        "Iterations": 1000,
+        "Milliseconds": 218.8379
+      },
+      {
+        "Side": "Lowered",
+        "Sample": 1,
+        "Iterations": 1000,
+        "Milliseconds": 27.9627
+      },
+      {
+        "Side": "Lowered",
+        "Sample": 2,
+        "Iterations": 1000,
+        "Milliseconds": 34.4928
+      },
+      {
+        "Side": "Lowered",
+        "Sample": 3,
+        "Iterations": 1000,
+        "Milliseconds": 30.2049
+      },
+      {
+        "Side": "Lowered",
+        "Sample": 4,
+        "Iterations": 1000,
+        "Milliseconds": 26.6737
+      },
+      {
+        "Side": "Lowered",
+        "Sample": 5,
+        "Iterations": 1000,
+        "Milliseconds": 32.5681
+      }
+    ],
+    "AssemblySHA256": "2F78EA82828CE48A53BA63777C2A2265BFDBF35E8814B1830DFE97701EE206E9"
+  },
+  "AndroidNativeObservation": {
+    "Model": "SM-S911U",
+    "Abi": "arm64-v8a",
+    "Android": "16",
+    "SDK": "36",
+    "InstalledApkSourceCommit": "UNVERIFIED; pinned binding scripts are staged separately",
+    "InstalledApks": [
+      {
+        "Name": "base.apk",
+        "SHA256": "d06068aded252394ba0e0f941e82987e1effd650f4e6b21cf91b848092a12140"
+      }
+    ],
+    "LaunchMilliseconds": 1832,
+    "Probe": {
+      "Timings": [
+        {
+          "Side": "PwshDelegate",
+          "Sample": 1,
+          "Iterations": 1000,
+          "Milliseconds": 7.7209
+        },
+        {
+          "Side": "PwshDelegate",
+          "Sample": 2,
+          "Iterations": 1000,
+          "Milliseconds": 10.2844
+        },
+        {
+          "Side": "PwshDelegate",
+          "Sample": 3,
+          "Iterations": 1000,
+          "Milliseconds": 6.2265
+        },
+        {
+          "Side": "PwshDelegate",
+          "Sample": 4,
+          "Iterations": 1000,
+          "Milliseconds": 6.1551
+        },
+        {
+          "Side": "PwshDelegate",
+          "Sample": 5,
+          "Iterations": 1000,
+          "Milliseconds": 6.4277
+        },
+        {
+          "Side": "Lowered",
+          "Sample": 1,
+          "Iterations": 1000,
+          "Milliseconds": 6.1333
+        },
+        {
+          "Side": "Lowered",
+          "Sample": 2,
+          "Iterations": 1000,
+          "Milliseconds": 6.054
+        },
+        {
+          "Side": "Lowered",
+          "Sample": 3,
+          "Iterations": 1000,
+          "Milliseconds": 6.1283
+        },
+        {
+          "Side": "Lowered",
+          "Sample": 4,
+          "Iterations": 1000,
+          "Milliseconds": 6.0627
+        },
+        {
+          "Side": "Lowered",
+          "Sample": 5,
+          "Iterations": 1000,
+          "Milliseconds": 15.1674
+        }
+      ],
+      "PowerShell": "7.7.0-preview.4",
+      "CoreLib": "11.0.0-rc.1.26425.128+3551975be08744f0418857c5bed8ab1545c5dd47",
+      "Passed": "True",
+      "ParityComparisons": "14",
+      "SMA": "7.7.0-preview.4 SHA: 1481b98f0079f979f658e49a7281024cc754049b+1481b98f0079f979f658e49a7281024cc754049b",
+      "Mode": "Native ABI observation only",
+      "PowerShellParity": "NOT RUN",
+      "CallbackInstalled": "True"
+    },
+    "CallbackEvidence": "1,1,1",
+    "CallbackCount": 1,
+    "CallbackThread": 1,
+    "ProfileThread": 1,
+    "Alive": true,
+    "CrashLines": 0,
+    "SurfaceLifecycleCycled": false,
+    "AssemblySHA256": "993A3CDDADEB073E89AB9BCA8DCE38C6BDA6E1F7FB6483B2AAEA899EB2DC8B6B",
+    "ProfileRestored": true
+  },
+  "AndroidQualification": {
+    "Status": "NOT RUN",
+    "Reason": "Installed app does not contain the pinned verification toolchain.",
+    "Source": "AndroidProfile.ps1",
+    "Line": 9,
+    "Column": 135,
+    "InstalledPowerShell": "7.7.0-preview.4",
+    "RequiredPowerShell": "7.7.0-preview.5",
+    "StrictProbeExitCode": 1,
+    "ProfileRestored": true
+  },
+  "AndroidCanvasAdmission": {
+    "Source": "Pwsh/modules/AndroidCanvas.psm1",
+    "Commit": "3110a85a63a48b2dc1500364cb508d06f3ea3f91",
+    "Admitted": false,
+    "Diagnostic": "No class definition found in source.",
+    "ArtifactWritten": false,
+    "Classification": "Typed class entrypoint boundary; the native adapter is a separate fixture."
+  },
+  "AdmittedMethodDefect": {
+    "Fixture": "ValueTypeReceiverFixture.ps1",
+    "Line": 2,
+    "Column": 51,
+    "Input": 0,
+    "Admitted": true,
+    "Expected": "0",
+    "Observed": null,
+    "RuntimeException": "System.NullReferenceException",
+    "Diverged": true,
+    "PowerShell": "7.7.0-preview.5",
+    "CoreLib": "11.0.0-rc.1.26425.128+3551975be08744f0418857c5bed8ab1545c5dd47"
+  },
+  "Verification": {
+    "SuitesPassed": 22,
+    "LegacyOutputs": 52,
+    "LegacyDiagnostics": 14,
+    "Regressions": 0,
+    "RatchetNegativeControls": "Assembly expectation and diagnostic expectation rejected",
+    "HeaderSlots": {
+      "COM": 5,
+      "JNI": 5,
+      "NativeActivity": 1
+    },
+    "CompilerChanged": false,
+    "FrozenBaselineChanged": false,
+    "DeviceInCI": false
+  }
+}
