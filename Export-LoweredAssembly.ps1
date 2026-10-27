@@ -843,12 +843,37 @@ function Read-PowerShellClass {
     }
 }
 
+function Add-GenericInference([Type] $Pattern, [Type] $Actual, [hashtable] $Bindings) {
+    # Structural inference only: do not guess a common type for conflicting
+    # occurrences of T or infer a type parameter solely from a return type.
+    if ($Pattern.IsGenericParameter) {
+        if ($Bindings.ContainsKey($Pattern)) { return $Bindings[$Pattern] -eq $Actual }
+        $Bindings[$Pattern] = $Actual
+        return $true
+    }
+    if ($Pattern.IsArray) {
+        if (-not $Actual.IsArray -or $Pattern.GetArrayRank() -ne $Actual.GetArrayRank() -or $Pattern.IsSZArray -ne $Actual.IsSZArray) { return $false }
+        return Add-GenericInference $Pattern.GetElementType() $Actual.GetElementType() $Bindings
+    }
+    if ($Pattern.IsGenericType) {
+        if (-not $Actual.IsGenericType -or $Pattern.GetGenericTypeDefinition() -ne $Actual.GetGenericTypeDefinition()) { return $false }
+        $patterns = $Pattern.GetGenericArguments()
+        $actuals = $Actual.GetGenericArguments()
+        for ($i = 0; $i -lt $patterns.Length; $i++) {
+            if (-not (Add-GenericInference $patterns[$i] $actuals[$i] $Bindings)) { return $false }
+        }
+        return $true
+    }
+    return $Pattern.IsAssignableFrom($Actual)
+}
+
 function Resolve-MatchingMethod {
     param(
         [Parameter(Mandatory)][Type] $TargetType,
         [Parameter(Mandatory)][string] $MethodName,
         [Parameter(Mandatory)][AllowEmptyCollection()][Type[]] $ArgumentTypes,
-        [switch] $IsStatic
+        [switch] $IsStatic,
+        [System.Management.Automation.Language.IScriptExtent] $SourceExtent
     )
 
     $flags = [Reflection.BindingFlags]'Public'
@@ -860,7 +885,7 @@ function Resolve-MatchingMethod {
 
     # 1. Exact match
     $exact = $TargetType.GetMethod($MethodName, $flags, $null, $ArgumentTypes, $null)
-    if ($null -ne $exact) { return $exact }
+    if ($null -ne $exact -and -not $exact.ContainsGenericParameters) { return $exact }
 
     # 2. Compatible match
     $all = @($TargetType.GetMethods($flags) | Where-Object {
@@ -868,6 +893,7 @@ function Resolve-MatchingMethod {
     })
 
     foreach ($candidate in $all) {
+        if ($candidate.ContainsGenericParameters) { continue }
         $params = $candidate.GetParameters()
         $match = $true
         for ($i = 0; $i -lt $params.Length; $i++) {
@@ -879,7 +905,43 @@ function Resolve-MatchingMethod {
         if ($match) { return $candidate }
     }
 
-    throw "Could not resolve method '$MethodName' with argument types ($($ArgumentTypes -join ', ')) on '$($TargetType.FullName)'."
+    $failure = "Could not resolve method '$MethodName' with argument types ($($ArgumentTypes -join ', ')) on '$($TargetType.FullName)'."
+    # Preserve the established non-generic binder and its diagnostics. New
+    # inference is a second path for static generic method definitions.
+    $genericCandidates = @($all | Where-Object { $IsStatic -and $_.IsGenericMethodDefinition })
+    if ($genericCandidates.Count -eq 0) { throw $failure }
+    $tried = [Collections.Generic.List[string]]::new()
+    $applicable = [Collections.Generic.List[object]]::new()
+    foreach ($candidate in $genericCandidates) {
+        $bindings = @{}
+        $parameters = $candidate.GetParameters()
+        $inferred = $true
+        for ($i = 0; $i -lt $parameters.Length; $i++) {
+            if (-not (Add-GenericInference $parameters[$i].ParameterType $ArgumentTypes[$i] $bindings)) { $inferred = $false; break }
+        }
+        $typeArguments = [Type[]]@($candidate.GetGenericArguments() | ForEach-Object { $bindings[$_] })
+        if (-not $inferred -or $typeArguments -contains $null) {
+            $tried.Add("${candidate}: conflicting or uninferred type parameters")
+            continue
+        }
+        try { $closed = $candidate.MakeGenericMethod($typeArguments) }
+        catch [ArgumentException] { $tried.Add("${candidate}: inferred arguments violate generic constraints"); continue }
+        $closedParameters = $closed.GetParameters()
+        $matchesArguments = $true
+        $isExact = $true
+        for ($i = 0; $i -lt $closedParameters.Length; $i++) {
+            if (-not $closedParameters[$i].ParameterType.IsAssignableFrom($ArgumentTypes[$i])) { $matchesArguments = $false; break }
+            if ($closedParameters[$i].ParameterType -ne $ArgumentTypes[$i]) { $isExact = $false }
+        }
+        if ($matchesArguments) { $applicable.Add([pscustomobject]@{ Method = $closed; Exact = $isExact }) }
+        $tried.Add("${candidate}: closed as $closed")
+    }
+    $best = @($applicable | Where-Object Exact)
+    if ($best.Count -eq 0) { $best = @($applicable) }
+    if ($best.Count -eq 1) { return $best[0].Method }
+    if ($best.Count -gt 1) { $failure = "Ambiguous generic method '$MethodName' on '$($TargetType.FullName)'." }
+    if ($SourceExtent) { $failure = '[{0}:{1}] {2}' -f $SourceExtent.StartLineNumber, $SourceExtent.StartColumnNumber, $failure }
+    throw ($failure + ' Candidates tried: ' + ($tried -join '; '))
 }
 
 function Resolve-MatchingConstructor {
@@ -1222,7 +1284,7 @@ function Convert-AstExpression {
             }
 
             # Static method call: [T]::Method(...)
-            $method = Resolve-MatchingMethod -TargetType $targetType -MethodName $memberName -ArgumentTypes $argTypes -IsStatic
+            $method = Resolve-MatchingMethod -TargetType $targetType -MethodName $memberName -ArgumentTypes $argTypes -IsStatic -SourceExtent $Node.Extent
             if ($method.IsDefined([Runtime.InteropServices.UnmanagedCallersOnlyAttribute],$false)) {
                 throw ('[{0}:{1}] UnmanagedCallersOnly method cannot be called from managed code.' -f $Node.Extent.StartLineNumber,$Node.Extent.StartColumnNumber)
             }
@@ -2198,6 +2260,15 @@ function Get-IlMember([Reflection.MemberInfo] $Member) {
         throw "'$($Member.DeclaringType.Name).$($Member.Name)' is used but not compiled; was it left out with -MethodNames?"
     }
     $declaring = $Member.DeclaringType
+    if ($Member -is [Reflection.MethodInfo] -and $Member.IsConstructedGenericMethod -and -not $declaring.IsConstructedGenericType) {
+        $originalArguments = $Member.GetGenericArguments()
+        $mappedArguments = [Type[]]@($originalArguments | ForEach-Object { Get-IlType $_ })
+        for ($i = 0; $i -lt $originalArguments.Length; $i++) {
+            if ($originalArguments[$i] -ne $mappedArguments[$i]) {
+                return $Member.GetGenericMethodDefinition().MakeGenericMethod($mappedArguments)
+            }
+        }
+    }
     if ($declaring -and $declaring.IsConstructedGenericType) {
         $mapped = Get-IlType $declaring
         if ($mapped -ne $declaring) {
@@ -2214,6 +2285,74 @@ function Get-IlMember([Reflection.MemberInfo] $Member) {
         }
     }
     $Member
+}
+
+function Write-IlReceiver([Reflection.Emit.ILGenerator] $IL, [Linq.Expressions.Expression] $Expr, $Context) {
+    if (-not $Expr.Type.IsValueType) {
+        Write-IlExpression -IL $IL -Expr $Expr -Context $Context
+        return
+    }
+    if ($Expr -is [Linq.Expressions.ParameterExpression]) {
+        if ($Context.Locals.ContainsKey($Expr)) {
+            $IL.Emit([Reflection.Emit.OpCodes]::Ldloca, $Context.Locals[$Expr])
+            return
+        }
+        if ($Context.Parameters.ContainsKey($Expr)) {
+            $IL.Emit([Reflection.Emit.OpCodes]::Ldarga, [int16]$Context.Parameters[$Expr])
+            return
+        }
+    }
+    if ($Expr -is [Linq.Expressions.MemberExpression] -and $Expr.Member -is [Reflection.FieldInfo] -and
+        -not $Expr.Member.IsInitOnly -and -not $Expr.Member.IsLiteral) {
+        if ($Expr.Expression) {
+            Write-IlReceiver -IL $IL -Expr $Expr.Expression -Context $Context
+            $IL.Emit([Reflection.Emit.OpCodes]::Ldflda, (Get-IlMember $Expr.Member))
+        } else {
+            $IL.Emit([Reflection.Emit.OpCodes]::Ldsflda, (Get-IlMember $Expr.Member))
+        }
+        return
+    }
+    if ($Expr -is [Linq.Expressions.BinaryExpression] -and $Expr.NodeType -eq [Linq.Expressions.ExpressionType]::ArrayIndex) {
+        Write-IlExpression -IL $IL -Expr $Expr.Left -Context $Context
+        Write-IlExpression -IL $IL -Expr $Expr.Right -Context $Context
+        $IL.Emit([Reflection.Emit.OpCodes]::Ldelema, (Get-IlType $Expr.Type))
+        return
+    }
+    if ($Expr -is [Linq.Expressions.IndexExpression] -and $null -eq $Expr.Indexer -and $Expr.Object.Type.IsArray -and $Expr.Arguments.Count -eq 1) {
+        Write-IlExpression -IL $IL -Expr $Expr.Object -Context $Context
+        Write-IlExpression -IL $IL -Expr $Expr.Arguments[0] -Context $Context
+        $IL.Emit([Reflection.Emit.OpCodes]::Ldelema, (Get-IlType $Expr.Type))
+        return
+    }
+    if ($Expr -is [Linq.Expressions.BlockExpression]) {
+        # Array normalization can wrap a storage location in a setup block.
+        foreach ($variable in $Expr.Variables) {
+            if (-not $Context.Locals.ContainsKey($variable)) { $Context.Locals[$variable] = $IL.DeclareLocal((Get-IlType $variable.Type)) }
+        }
+        for ($i = 0; $i -lt $Expr.Expressions.Count - 1; $i++) {
+            Write-IlExpression -IL $IL -Expr $Expr.Expressions[$i] -Context $Context
+            if ($Expr.Expressions[$i].Type -ne [void] -and $Expr.Expressions[$i].NodeType -ne [Linq.Expressions.ExpressionType]::Assign) { $IL.Emit([Reflection.Emit.OpCodes]::Pop) }
+        }
+        Write-IlReceiver -IL $IL -Expr $Expr.Expressions[$Expr.Expressions.Count - 1] -Context $Context
+        return
+    }
+    # Computed values, properties and readonly fields have no writable storage.
+    # Evaluate exactly once and call on a defensive temporary.
+    $temporary = $IL.DeclareLocal((Get-IlType $Expr.Type))
+    Write-IlExpression -IL $IL -Expr $Expr -Context $Context
+    Write-IlLocalStore -IL $IL -Loc $temporary
+    $IL.Emit([Reflection.Emit.OpCodes]::Ldloca, $temporary)
+}
+
+function Write-IlInstanceCall([Reflection.Emit.ILGenerator] $IL, [Reflection.MethodInfo] $Method, [Type] $ReceiverType) {
+    if ($ReceiverType -and $ReceiverType.IsValueType -and ($Method.IsVirtual -or -not $Method.DeclaringType.IsValueType)) {
+        $IL.Emit([Reflection.Emit.OpCodes]::Constrained, (Get-IlType $ReceiverType))
+        $IL.Emit([Reflection.Emit.OpCodes]::Callvirt, (Get-IlMember $Method))
+    } elseif ($Method.IsVirtual -and -not $Method.DeclaringType.IsValueType) {
+        $IL.Emit([Reflection.Emit.OpCodes]::Callvirt, (Get-IlMember $Method))
+    } else {
+        $IL.Emit([Reflection.Emit.OpCodes]::Call, (Get-IlMember $Method))
+    }
 }
 
 function Write-IlArgumentLoad([Reflection.Emit.ILGenerator]$IL, [int]$Index) {
@@ -2646,16 +2785,13 @@ function Write-IlExpression {
     # 9.4 Method call (MethodCallExpression)
     if ($Expr -is [Linq.Expressions.MethodCallExpression]) {
         if ($Expr.Object) {
-            Write-IlExpression -IL $IL -Expr $Expr.Object -Context $Context
+            Write-IlReceiver -IL $IL -Expr $Expr.Object -Context $Context
         }
         foreach ($arg in $Expr.Arguments) {
             Write-IlExpression -IL $IL -Expr $arg -Context $Context
         }
-        if ($Expr.Method.IsVirtual -and -not $Expr.Method.DeclaringType.IsValueType) {
-            $IL.Emit([Reflection.Emit.OpCodes]::Callvirt, (Get-IlMember $Expr.Method))
-        } else {
-            $IL.Emit([Reflection.Emit.OpCodes]::Call, (Get-IlMember $Expr.Method))
-        }
+        $receiverType = if ($Expr.Object) { $Expr.Object.Type } else { $null }
+        Write-IlInstanceCall -IL $IL -Method $Expr.Method -ReceiverType $receiverType
         return
     }
 
@@ -2672,13 +2808,10 @@ function Write-IlExpression {
         if ($Expr.Member -is [Reflection.PropertyInfo]) {
             $getter = $Expr.Member.GetGetMethod()
             if ($Expr.Expression) {
-                Write-IlExpression -IL $IL -Expr $Expr.Expression -Context $Context
+                Write-IlReceiver -IL $IL -Expr $Expr.Expression -Context $Context
             }
-            if ($getter.IsVirtual -and -not $getter.DeclaringType.IsValueType) {
-                $IL.Emit([Reflection.Emit.OpCodes]::Callvirt, (Get-IlMember $getter))
-            } else {
-                $IL.Emit([Reflection.Emit.OpCodes]::Call, (Get-IlMember $getter))
-            }
+            $receiverType = if ($Expr.Expression) { $Expr.Expression.Type } else { $null }
+            Write-IlInstanceCall -IL $IL -Method $getter -ReceiverType $receiverType
             return
         }
         if ($Expr.Member -is [Reflection.FieldInfo]) {
@@ -2690,7 +2823,7 @@ function Write-IlExpression {
                 return
             }
             if ($Expr.Expression) {
-                Write-IlExpression -IL $IL -Expr $Expr.Expression -Context $Context
+                Write-IlReceiver -IL $IL -Expr $Expr.Expression -Context $Context
                 $IL.Emit([Reflection.Emit.OpCodes]::Ldfld, (Get-IlMember $Expr.Member))
             } else {
                 $IL.Emit([Reflection.Emit.OpCodes]::Ldsfld, (Get-IlMember $Expr.Member))
@@ -2805,7 +2938,7 @@ function Write-IlExpression {
             }
             if ($Expr.Left -is [Linq.Expressions.MemberExpression]) {
                 $member = $Expr.Left.Member
-                if ($Expr.Left.Expression) { Write-IlExpression -IL $IL -Expr $Expr.Left.Expression -Context $Context }
+                if ($Expr.Left.Expression) { Write-IlReceiver -IL $IL -Expr $Expr.Left.Expression -Context $Context }
                 Write-IlExpression -IL $IL -Expr $Expr.Right -Context $Context
                 if ($member -is [Reflection.FieldInfo]) {
                     $op = if ($member.IsStatic) { [Reflection.Emit.OpCodes]::Stsfld } else { [Reflection.Emit.OpCodes]::Stfld }
@@ -2813,8 +2946,8 @@ function Write-IlExpression {
                     return
                 }
                 $setter = $member.GetSetMethod()
-                $op = if ($setter.IsVirtual -and -not $setter.DeclaringType.IsValueType) { [Reflection.Emit.OpCodes]::Callvirt } else { [Reflection.Emit.OpCodes]::Call }
-                $IL.Emit($op, (Get-IlMember $setter))
+                $receiverType = if ($Expr.Left.Expression) { $Expr.Left.Expression.Type } else { $null }
+                Write-IlInstanceCall -IL $IL -Method $setter -ReceiverType $receiverType
                 return
             }
             throw "Assignment to unsupported target expression '$($Expr.Left.GetType().FullName)'."
